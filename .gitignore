@@ -1,0 +1,40 @@
+# envonment files
+
+.vscode/
+.claude/
+*.log
+log.txt
+.DS_Store
+start_all.bat
+
+# EEG_Backend & EEG_Simulator
+
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+
+*.sqlite3
+*.db
+EEG_Backend/ehss.db
+
+EEG_Backend/storage/eeg_data/**/*.csv
+EEG_Backend/storage/models/patients/**/*.pt
+EEG_Backend/data/chb_mit/**/*.edf
+*.pt
+*.csv
+*.pth
+
+# Node.js / Expo (EEG_Reader)
+
+EEG_Reader/node_modules/
+EEG_Reader/.expo/
+EEG_Reader/.env
+npm-debug.log
+yarn-error.log
+
+EEG_Reader/ios/
+EEG_Reader/android/
