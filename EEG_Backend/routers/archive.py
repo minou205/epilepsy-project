@@ -1,9 +1,3 @@
-"""
-Archive endpoints — store and retrieve alarm events for patient/helper access.
-
-The phone POSTs alarm results (confirmed or auto-dismissed) after each alarm
-is resolved. Helpers can then GET the archive for their associated patients.
-"""
 import json
 from datetime import datetime, timezone
 
@@ -23,15 +17,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
-
 class AlarmEventCreate(BaseModel):
     id: str
     patient_id: str
-    alarm_type: str                          # 'prediction' | 'detection'
-    tier: str                                # 'general' | 'v1' | 'v2' …
-    timestamp: str                           # ISO timestamp
-    confirmed: Optional[int] = None          # 1=real, 0=false/auto-no
+    alarm_type: str
+    tier: str
+    timestamp: str
+    confirmed: Optional[int] = None
     predictor_probs: Optional[list[float]] = None
     detector_probs: Optional[list[float]] = None
     prob_timestamps: Optional[list[float]] = None
@@ -58,14 +50,11 @@ class ArchiveStats(BaseModel):
     false_alarms: int
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
 @router.post("/event")
 async def save_alarm_event(
     event: AlarmEventCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Save an alarm event from the phone app."""
     record = AlarmEventRecord(
         id=event.id,
         patient_id=event.patient_id,
@@ -88,7 +77,6 @@ async def get_archive(
     patient_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieve alarm history for a patient."""
     result = await db.execute(
         select(AlarmEventRecord)
         .where(AlarmEventRecord.patient_id == patient_id)
@@ -118,7 +106,6 @@ async def get_archive_stats(
     patient_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get summary statistics for a patient's alarm history."""
     result = await db.execute(
         select(AlarmEventRecord)
         .where(AlarmEventRecord.patient_id == patient_id)

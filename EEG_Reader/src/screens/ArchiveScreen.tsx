@@ -8,6 +8,7 @@ import {
   Platform,
   RefreshControl,
   ScrollView,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
@@ -16,7 +17,8 @@ import { useAuth }        from '../services/AuthContext';
 import { useAppSettings } from '../hooks/useAppSettings';
 import BottomTabBar        from '../components/BottomTabBar';
 import ProbabilityChart    from '../components/ProbabilityChart';
-import { loadArchive, getArchiveStats, ArchivedAlarm, ArchiveStats } from '../services/ArchiveStorage';
+import { loadArchive, getArchiveStats, clearArchive, ArchivedAlarm, ArchiveStats } from '../services/ArchiveStorage';
+import { BackendClient, type DataCounts } from '../services/BackendClient';
 import { fetchHelperPatients } from '../services/CommunityService';
 import { UserProfile } from '../services/supabaseClient';
 
@@ -39,16 +41,15 @@ export default function ArchiveScreen() {
 
   const [events,     setEvents    ] = useState<ArchivedAlarm[]>([]);
   const [stats,      setStats     ] = useState<ArchiveStats | null>(null);
+  const [dataCounts, setDataCounts] = useState<DataCounts | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [expanded,   setExpanded  ] = useState<string | null>(null);
 
-  // Helper patient picker
   const [patients,       setPatients      ] = useState<PatientChip[]>([]);
   const [selectedPatient, setSelectedPatient] = useState<string | null>(null);
 
   const isHelper = role === 'helper';
 
-  // Load helper's patients
   useEffect(() => {
     if (!isHelper || !user?.id) return;
     fetchHelperPatients(user.id)
@@ -61,7 +62,6 @@ export default function ArchiveScreen() {
       .catch(err => console.error('[Archive] Failed to load patients:', err));
   }, [isHelper, user?.id]);
 
-  // Determine which patient's archive to show
   const patientId = isHelper ? (selectedPatient ?? '') : settings.patientId;
 
   const load = useCallback(async () => {
@@ -76,7 +76,17 @@ export default function ArchiveScreen() {
     } catch (err) {
       console.error('[Archive] Load failed:', err);
     }
-  }, [patientId]);
+
+    if (settings.serverBaseUrl) {
+      try {
+        const client = new BackendClient(settings.serverBaseUrl);
+        const counts = await client.getDataCounts(patientId);
+        setDataCounts(counts);
+      } catch (err) {
+        console.warn('[Archive] Backend data counts failed:', err);
+      }
+    }
+  }, [patientId, settings.serverBaseUrl]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -84,6 +94,26 @@ export default function ArchiveScreen() {
     setRefreshing(true);
     await load();
     setRefreshing(false);
+  };
+
+  const handleReset = () => {
+    if (!patientId) return;
+    Alert.alert(
+      'Reset archive stats',
+      'This clears all alarm history on this device. Backend data is not affected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            await clearArchive(patientId);
+            setEvents([]);
+            setStats({ totalAlarms: 0, predictions: 0, detections: 0, confirmedReal: 0, falseAlarms: 0 });
+          },
+        },
+      ],
+    );
   };
 
   const renderEvent = ({ item }: { item: ArchivedAlarm }) => {
@@ -99,7 +129,6 @@ export default function ArchiveScreen() {
         onPress={() => setExpanded(isExpanded ? null : item.id)}
         activeOpacity={0.8}
       >
-        {/* Header row */}
         <View style={styles.eventHeader}>
           <View style={[styles.typeBadge, { backgroundColor: accentColor + '22', borderColor: accentColor + '55' }]}>
             <Text style={[styles.typeBadgeText, { color: accentColor }]}>
@@ -109,7 +138,6 @@ export default function ArchiveScreen() {
           <Text style={styles.eventDate}>{formatDate(item.timestamp)}</Text>
         </View>
 
-        {/* Details */}
         <View style={styles.eventDetails}>
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Tier</Text>
@@ -121,7 +149,6 @@ export default function ArchiveScreen() {
           </View>
         </View>
 
-        {/* Expanded: probability trace chart */}
         {isExpanded && item.probabilityTrace && item.probabilityTrace.predictorProbs.length > 0 && (
           <View style={styles.expandedChart}>
             <ProbabilityChart
@@ -152,12 +179,15 @@ export default function ArchiveScreen() {
     <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
       <ExpoStatusBar style="light" />
 
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Archive</Text>
+        {!isHelper && (
+          <TouchableOpacity style={styles.resetBtn} onPress={handleReset} activeOpacity={0.7}>
+            <Text style={styles.resetBtnText}>Reset</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Helper patient picker */}
       {isHelper && patients.length > 0 && (
         <ScrollView
           horizontal
@@ -188,7 +218,6 @@ export default function ArchiveScreen() {
         </View>
       )}
 
-      {/* Stats row */}
       {stats && (
         <View style={styles.statsRow}>
           <View style={styles.statBox}>
@@ -214,7 +243,23 @@ export default function ArchiveScreen() {
         </View>
       )}
 
-      {/* Event list */}
+      {dataCounts && (
+        <View style={styles.dataCountsRow}>
+          <View style={styles.statBox}>
+            <Text style={[styles.statNum, { color: '#FF6644' }]}>{dataCounts.seizure_count}</Text>
+            <Text style={styles.statLabel}>Seizures</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={[styles.statNum, { color: '#4499FF' }]}>{dataCounts.normal_count}</Text>
+            <Text style={styles.statLabel}>Normal</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={[styles.statNum, { color: '#FFCC00' }]}>{dataCounts.next_train_at}</Text>
+            <Text style={styles.statLabel}>Next Train</Text>
+          </View>
+        </View>
+      )}
+
       <FlatList
         data={events}
         keyExtractor={item => item.id}
@@ -238,12 +283,19 @@ export default function ArchiveScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#090915' },
   header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, paddingVertical: 14,
     borderBottomWidth: 1, borderBottomColor: '#0D1828',
   },
   headerTitle: { color: '#E8F0FF', fontSize: 20, fontWeight: '700', fontFamily: MONO },
+  resetBtn: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    borderWidth: 1, borderColor: '#3A1A1A', backgroundColor: '#1A0808',
+  },
+  resetBtnText: {
+    color: '#FF6644', fontSize: 12, fontWeight: '700', fontFamily: MONO, letterSpacing: 0.5,
+  },
 
-  // Patient picker
   patientPicker: {
     paddingHorizontal: 12, paddingVertical: 10, gap: 8,
     borderBottomWidth: 1, borderBottomColor: '#0D1828',
@@ -261,7 +313,6 @@ const styles = StyleSheet.create({
   noPatients: { padding: 20, alignItems: 'center' },
   noPatientsText: { color: '#334455', fontSize: 13 },
 
-  // Stats
   statsRow: {
     flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 12,
     borderBottomWidth: 1, borderBottomColor: '#0D1828', gap: 4,
@@ -269,11 +320,14 @@ const styles = StyleSheet.create({
   statBox: { flex: 1, alignItems: 'center', gap: 2 },
   statNum: { color: '#E8F0FF', fontSize: 20, fontWeight: '700', fontFamily: MONO },
   statLabel: { color: '#445566', fontSize: 9, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: 0.5 },
+  dataCountsRow: {
+    flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: '#0D1828', gap: 4,
+  },
   listContent: { paddingVertical: 8 },
   emptyContainer: { padding: 40, alignItems: 'center' },
   emptyText: { color: '#334455', fontSize: 14, textAlign: 'center' },
 
-  // Event card
   eventCard: {
     marginHorizontal: 12, marginVertical: 4,
     backgroundColor: '#0D1220', borderRadius: 12,

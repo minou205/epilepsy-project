@@ -1,8 +1,3 @@
-"""Headset registration & validation.
-
-Locks each patient to ONE headset (channel set). Every uploaded data file is
-validated against this lock so the model never sees mixed-headset training data.
-"""
 import json
 import logging
 from datetime import datetime, timezone
@@ -14,11 +9,10 @@ from models.patient_headset import PatientHeadset
 logger = logging.getLogger(__name__)
 
 MIN_CH = 9
-MAX_CH = 18
+MAX_CH = 24
 
 
 class HeadsetMismatchError(Exception):
-    """Raised when uploaded data does not match the patient's locked headset."""
 
     def __init__(self, expected: list[str], got: list[str]):
         self.expected = expected
@@ -41,13 +35,6 @@ async def register_or_validate(
     sampling_rate: int = 256,
     headset_name: str | None = None,
 ) -> tuple[PatientHeadset, bool]:
-    """Register a new headset on first upload, or validate against the lock.
-
-    Returns: (headset_record, is_new)
-    Raises:
-      ValueError            — channel count outside 9..18, or names not strings
-      HeadsetMismatchError  — existing headset doesn't match channel_names
-    """
     if not isinstance(channel_names, list) or not all(isinstance(c, str) for c in channel_names):
         raise ValueError('channel_names must be a list of strings')
 
@@ -81,7 +68,6 @@ async def register_or_validate(
 
 
 async def reset_headset(db: AsyncSession, patient_id: str) -> None:
-    """Delete the headset lock so the next upload re-registers."""
     rec = await get_headset(db, patient_id)
     if rec is not None:
         await db.delete(rec)

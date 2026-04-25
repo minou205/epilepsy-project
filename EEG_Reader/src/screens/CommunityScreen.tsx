@@ -19,8 +19,9 @@ import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth }       from '../services/AuthContext';
 import { useNavigation } from '../navigation/NavigationContext';
-import BottomTabBar       from '../components/BottomTabBar';
-import RoleBadge          from '../components/RoleBadge';
+import BottomTabBar          from '../components/BottomTabBar';
+import RoleBadge             from '../components/RoleBadge';
+import PendingRequestsCard   from '../components/PendingRequestsCard';
 import {
   Post,
   Comment,
@@ -59,13 +60,11 @@ export default function CommunityScreen() {
   const [composeImage, setComposeImage] = useState<string | null>(null);
   const [posting,     setPosting    ] = useState(false);
 
-  // Comments modal
   const [selectedPost,  setSelectedPost ] = useState<Post | null>(null);
   const [comments,      setComments     ] = useState<Comment[]>([]);
   const [commentText,   setCommentText  ] = useState('');
   const [loadingComments, setLoadingComments] = useState(false);
 
-  // Edit modal
   const [editingPost,  setEditingPost ] = useState<Post | null>(null);
   const [editText,     setEditText    ] = useState('');
   const [saving,       setSaving      ] = useState(false);
@@ -202,7 +201,6 @@ export default function CommunityScreen() {
 
   const renderPost = ({ item }: { item: Post }) => (
     <View style={styles.postCard}>
-      {/* Author row */}
       <View style={styles.authorRow}>
         <TouchableOpacity
           style={styles.avatar}
@@ -226,15 +224,12 @@ export default function CommunityScreen() {
         </View>
       </View>
 
-      {/* Content */}
       <Text style={styles.postContent}>{item.content}</Text>
 
-      {/* Image */}
       {item.image_url && (
         <Image source={{ uri: item.image_url }} style={styles.postImage} resizeMode="cover" />
       )}
 
-      {/* Actions row */}
       <View style={styles.actionsRow}>
         <TouchableOpacity style={styles.actionBtn} onPress={() => handleLike(item.id)}>
           <Text style={[styles.actionText, item.liked_by_me && { color: '#FF4444' }]}>
@@ -262,7 +257,6 @@ export default function CommunityScreen() {
     <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
       <ExpoStatusBar style="light" />
 
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.myAvatar}
@@ -296,12 +290,12 @@ export default function CommunityScreen() {
         </View>
       </View>
 
-      {/* Feed */}
       <FlatList
         data={posts}
         keyExtractor={item => item.id}
         renderItem={renderPost}
         contentContainerStyle={styles.listContent}
+        ListHeaderComponent={<PendingRequestsCard />}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#4499FF" />
         }
@@ -312,7 +306,6 @@ export default function CommunityScreen() {
         }
       />
 
-      {/* Compose modal */}
       <Modal visible={showCompose} transparent animationType="slide">
         <KeyboardAvoidingView
           style={styles.composeOverlay}
@@ -336,7 +329,6 @@ export default function CommunityScreen() {
               autoFocus
             />
 
-            {/* Image preview */}
             {composeImage && (
               <View style={styles.imagePreviewRow}>
                 <Image source={{ uri: composeImage }} style={styles.imagePreview} />
@@ -363,7 +355,6 @@ export default function CommunityScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Edit post modal */}
       <Modal visible={!!editingPost} transparent animationType="slide">
         <KeyboardAvoidingView
           style={styles.composeOverlay}
@@ -400,7 +391,6 @@ export default function CommunityScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Comments modal */}
       <Modal visible={!!selectedPost} transparent animationType="slide">
         <KeyboardAvoidingView
           style={styles.composeOverlay}
@@ -492,7 +482,6 @@ const styles = StyleSheet.create({
   emptyContainer: { padding: 40, alignItems: 'center' },
   emptyText: { color: '#334455', fontSize: 14, textAlign: 'center' },
 
-  // Post card
   postCard: {
     marginHorizontal: 12, marginVertical: 5,
     backgroundColor: '#0D1220', borderRadius: 14,
@@ -513,7 +502,6 @@ const styles = StyleSheet.create({
   actionBtn: { paddingVertical: 4, paddingHorizontal: 6 },
   actionText: { color: '#556677', fontSize: 13, fontFamily: MONO },
 
-  // Compose
   composeOverlay: { flex: 1, backgroundColor: '#000000CC', justifyContent: 'flex-end' },
   composeCard: {
     backgroundColor: '#0D1220', borderTopLeftRadius: 20, borderTopRightRadius: 20,
@@ -540,7 +528,6 @@ const styles = StyleSheet.create({
   },
   postBtnText: { color: '#090915', fontSize: 16, fontWeight: '700' },
 
-  // Comments
   commentsCard: {
     backgroundColor: '#0D1220', borderTopLeftRadius: 20, borderTopRightRadius: 20,
     padding: 20, maxHeight: '80%', flex: 1,

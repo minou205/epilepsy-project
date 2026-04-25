@@ -20,11 +20,8 @@ const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'mon
 
 interface ConnectScreenProps {
   session      : EEGSession;
-  /** True while useAutoConnect is trying to reconnect in the background. */
   reconnecting ?: boolean;
-  /** How many auto-reconnect attempts have been made so far. */
   retryCount   ?: number;
-  /** The IP from the Supabase profile (used to pre-fill the manual input). */
   serverIp     ?: string | null;
 }
 
@@ -37,10 +34,6 @@ export default function ConnectScreen({
   const { navigate }          = useNavigation();
   const { profile }           = useAuth();
   const [ipInput, setIpInput] = useState('');
-
-  // ── Connecting auto-connect ─────────────────────────────────────────────────
-  // While the auto-connect hook is running we show a spinner + the target IP.
-  // The user can still override with a manual entry at any time.
 
   const isAutoConnecting = reconnecting && session.status !== 'error';
 
@@ -58,7 +51,6 @@ export default function ConnectScreen({
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
 
-        {/* ── Branding / greeting ── */}
         <View style={styles.titleBlock}>
           <Image
             source={require('../../assets/logo.png')}
@@ -78,7 +70,6 @@ export default function ConnectScreen({
           )}
         </View>
 
-        {/* ── Auto-connect banner ── */}
         {isAutoConnecting && (
           <View style={styles.reconnectBanner}>
             <ActivityIndicator size="small" color="#4499FF" style={{ marginRight: 10 }} />
@@ -90,7 +81,6 @@ export default function ConnectScreen({
           </View>
         )}
 
-        {/* ── Error from last attempt ── */}
         {session.status === 'error' && (
           <View style={styles.errorPill}>
             <Text style={styles.errorPillText}>{session.statusMessage}</Text>
@@ -102,7 +92,6 @@ export default function ConnectScreen({
           </View>
         )}
 
-        {/* ── Manual override input ── */}
         <View style={styles.manualSection}>
           <Text style={styles.manualLabel}>
             {serverIp ? 'Connect to a different device' : 'EEG Simulator IP Address'}
@@ -162,7 +151,6 @@ const styles = StyleSheet.create({
     gap              : 14,
   },
 
-  // ── Branding ──
   titleBlock: {
     alignItems  : 'center',
     marginBottom: 4,
@@ -197,7 +185,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  // ── Auto-connect banner ──
   reconnectBanner: {
     flexDirection  : 'row',
     alignItems     : 'center',
@@ -215,7 +202,6 @@ const styles = StyleSheet.create({
     flex      : 1,
   },
 
-  // ── Error pill ──
   errorPill: {
     backgroundColor: '#FF664422',
     borderWidth    : 1,
@@ -236,7 +222,6 @@ const styles = StyleSheet.create({
     fontFamily: MONO,
   },
 
-  // ── Manual entry ──
   manualSection: {
     gap: 10,
   },

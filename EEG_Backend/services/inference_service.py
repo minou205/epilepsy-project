@@ -1,13 +1,3 @@
-"""
-Inference service - Streamlined to perfectly match the notebook's seizure_alarm_system()
-Optimized for real-time streaming, preventing memory leaks and infinite alarms.
-
-KEY FIX (2026-04-09): The bandpass filter (sosfiltfilt, 0.5-50 Hz) MUST be applied
-to a long accumulated buffer, NOT to each 5-second window independently.
-Filtering a tiny window produces massive edge artifacts that cause false alarms.
-The notebook filters the ENTIRE recording first, then extracts windows — we emulate
-this by maintaining a rolling raw EEG buffer per patient.
-"""
 import logging
 import numpy as np
 import torch
@@ -25,7 +15,6 @@ from config import (
 )
 from models.model_artifact import ModelArtifact
 
-# Import notebook modules
 from services.personal_detection import (
     build_model as build_detection_model,
     SequenceWGANDiscriminator as DetectionDiscriminator,
@@ -46,26 +35,17 @@ from services.personal_prediction import (
 
 logger = logging.getLogger(__name__)
 
-# ── Buffer Configuration ─────────────────────────────────────────────────────
-# The bandpass filter needs a long signal context to avoid edge artifacts.
-# 60 seconds of data at 256 Hz = 15360 samples — more than enough for the
-# 0.5 Hz low-cut (period=2s) to fully stabilize.
 RAW_BUFFER_SECONDS = 60
-RAW_BUFFER_SAMPLES = RAW_BUFFER_SECONDS * FS  # 15360
+RAW_BUFFER_SAMPLES = RAW_BUFFER_SECONDS * FS
 
-# ── Unit Conversion ──────────────────────────────────────────────────────────
-# The models were trained on EDF data loaded by MNE, which returns Volts.
-# The headset app sends data in microvolts (µV).  We must convert µV → V
-# so the normalization (train_ref_mu/std) produces correct values.
 UV_TO_V = 1e-6
 
 
 def adjust_channels(data_np: np.ndarray, expected_channels: int = 18) -> np.ndarray:
-    """Dynamically pads or truncates incoming channels to match the model's architecture."""
     current_channels = data_np.shape[0]
     if current_channels == expected_channels:
         return data_np
-    
+
     if current_channels < expected_channels:
         padding = np.zeros((expected_channels - current_channels, data_np.shape[1]))
         return np.vstack((data_np, padding))
@@ -73,23 +53,26 @@ def adjust_channels(data_np: np.ndarray, expected_channels: int = 18) -> np.ndar
         return data_np[:expected_channels, :]
 
 class ModelCache:
-    """Simple model cache - load once, reuse."""
     def __init__(self):
         self._models = {}
-        
+
     def get_or_load(self, key: str, model_path: Path, model_type: str) -> dict:
         if key in self._models:
-            return self._models[key]
-            
+            cached = self._models[key]
+            if cached.get('path') != str(model_path):
+                logger.info(f"Cache stale for {key}: {cached.get('path')} != {model_path}, reloading")
+                del self._models[key]
+            else:
+                return cached
+
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
-        
+
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         ckpt = torch.load(str(model_path), map_location=device, weights_only=False)
-        
-        # Read dynamic channel count (defaults to 18 if old model)
+
         n_channels = int(ckpt.get('n_channels', N_CH)) if isinstance(ckpt, dict) else N_CH
-        
+
         if model_type == 'predictor':
             build_fn = build_prediction_model
             discriminator_cls = PredictionDiscriminator
@@ -98,20 +81,19 @@ class ModelCache:
             build_fn = build_detection_model
             discriminator_cls = DetectionDiscriminator
             seq_len = WGAN_SEQ_LEN_DETECTION
-        
-        # Build model with the correct channel count
+
         model = build_fn(E=n_channels)
-        
+
         if isinstance(ckpt, dict) and 'state_dict' in ckpt:
             model.load_state_dict(ckpt['state_dict'])
         elif isinstance(ckpt, dict):
             model.load_state_dict(ckpt)
         else:
             model = ckpt
-            
+
         model = model.to(device)
         model.eval()
-        
+
         discriminator = None
         disc_calibration = 0.0
         if isinstance(ckpt, dict) and ckpt.get('disc_state_dict'):
@@ -123,7 +105,7 @@ class ModelCache:
                 disc_calibration = float(ckpt.get('disc_calibration', 0.0))
             except Exception as e:
                 logger.warning(f"Failed to load discriminator: {e}")
-        
+
         entry = {
             'model': model,
             'discriminator': discriminator,
@@ -134,18 +116,18 @@ class ModelCache:
             'n_channels': n_channels,
             'path': str(model_path),
         }
-        
+
         self._models[key] = entry
         return entry
-    
+
     def is_loaded(self, key: str) -> bool:
         return key in self._models
-    
+
     def invalidate(self, patient_id: str):
-        """Clears cached models for a patient when a new one is trained."""
         keys_to_remove = [k for k in self._models.keys() if k.startswith(patient_id)]
         for k in keys_to_remove:
             del self._models[k]
+        reset_patient_sessions(patient_id)
 
 
 model_cache = ModelCache()
@@ -157,74 +139,58 @@ async def run_inference(
     general_model_config: str,
     db: AsyncSession,
 ) -> dict:
-    """Run inference on streaming EEG window."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data_np = np.array(eeg_data, dtype=np.float32)
-    
-    # Convert from microvolts (headset) to volts (MNE/EDF training units)
+
     data_np = data_np * UV_TO_V
-    
+
     ensure_patient_models(patient_id)
-    
+
     predictor_entry = None
     detector_entry = None
     tier = 'none'
-    
-    # TEMP: Force loading from patient directory to test new models
-    tier = 'general'
-    try:
-        pred_path = patient_predictor_path(patient_id)
-        if pred_path.exists():
-            predictor_entry = model_cache.get_or_load(
-                f"{patient_id}_predictor", pred_path, 'predictor'
-            )
-            logger.info(f"FORCED: Loaded predictor from patient path: {pred_path}")
-    except Exception as e:
-        logger.error(f"Failed to load patient predictor: {e}")
-    
-    try:
-        det_path = patient_detector_path(patient_id)
-        if det_path.exists():
-            detector_entry = model_cache.get_or_load(
-                f"{patient_id}_detector", det_path, 'detector'
-            )
-            logger.info(f"FORCED: Loaded detector from patient path: {det_path}")
-    except Exception as e:
-        logger.error(f"Failed to load patient detector: {e}")
-    
-    # Original code commented out for testing
-    """
+
     result = await db.execute(
         select(ModelArtifact)
         .where(ModelArtifact.patient_id == patient_id, ModelArtifact.is_active == 1)
         .order_by(ModelArtifact.version_num.desc())
     )
     artifacts = result.scalars().all()
-    
+    logger.info(f"[inference] patient={patient_id} active_artifacts={len(artifacts)}")
+
     for art in artifacts:
-        if art.model_type == 'predictor' and predictor_entry is None:
+        path_lower = art.file_path.lower()
+        if 'predictor' in path_lower:
+            actual_type = 'predictor'
+        elif 'detector' in path_lower:
+            actual_type = 'detector'
+        else:
+            actual_type = art.model_type
+
+        if actual_type == 'predictor' and predictor_entry is None:
             try:
                 predictor_entry = model_cache.get_or_load(
                     f"{patient_id}_predictor", Path(art.file_path), 'predictor'
                 )
                 tier = art.tier
-                logger.info(f"Loaded predictor from DB artifact: {art.file_path}, tier: {tier}")
+                logger.info(f"[inference] loaded PERSONAL predictor tier={art.tier} path={art.file_path}")
             except Exception as e:
-                logger.error(f"Failed to load predictor: {e}")
-        elif art.model_type == 'detector' and detector_entry is None:
+                logger.error(f"Failed to load predictor artifact: {e}")
+        elif actual_type == 'detector' and detector_entry is None:
             try:
                 detector_entry = model_cache.get_or_load(
                     f"{patient_id}_detector", Path(art.file_path), 'detector'
                 )
                 tier = art.tier
-                logger.info(f"Loaded detector from DB artifact: {art.file_path}, tier: {tier}")
+                logger.info(f"[inference] loaded PERSONAL detector tier={art.tier} path={art.file_path}")
             except Exception as e:
-                logger.error(f"Failed to load detector: {e}")
-    
+                logger.error(f"Failed to load detector artifact: {e}")
+
     if not predictor_entry and not detector_entry:
+        logger.info(f"[inference] no personal artifacts loaded, falling back to GENERAL for {patient_id} (config={general_model_config})")
         if general_model_config == 'none':
             return _no_models_response()
-        
+
         tier = 'general'
         if general_model_config in ('both', 'prediction_only'):
             try:
@@ -235,10 +201,10 @@ async def run_inference(
                     predictor_entry = model_cache.get_or_load(
                         f"{patient_id}_predictor", pred_path, 'predictor'
                     )
-                    logger.info(f"Loaded predictor from patient/general path: {pred_path}, tier: {tier}")
+                    logger.info(f"[inference] loaded GENERAL predictor path={pred_path}")
             except Exception as e:
                 logger.error(f"Failed to load general predictor: {e}")
-        
+
         if general_model_config in ('both', 'detection_only'):
             try:
                 det_path = patient_detector_path(patient_id)
@@ -248,14 +214,13 @@ async def run_inference(
                     detector_entry = model_cache.get_or_load(
                         f"{patient_id}_detector", det_path, 'detector'
                     )
-                    logger.info(f"Loaded detector from patient/general path: {det_path}, tier: {tier}")
+                    logger.info(f"[inference] loaded GENERAL detector path={det_path}")
             except Exception as e:
                 logger.error(f"Failed to load general detector: {e}")
-    """
 
     if not predictor_entry and not detector_entry:
         return _no_models_response()
-    
+
     predictor_prob, predictor_label = None, None
     if predictor_entry:
         try:
@@ -264,7 +229,7 @@ async def run_inference(
             )
         except Exception as e:
             logger.error(f"Predictor failed: {e}")
-    
+
     detector_prob, detector_label = None, None
     if detector_entry:
         try:
@@ -273,110 +238,96 @@ async def run_inference(
             )
         except Exception as e:
             logger.error(f"Detector failed: {e}")
-    
+
     return {
         'predictor_prob': predictor_prob,
         'detector_prob': detector_prob,
         'predictor_label': predictor_label,
         'detector_label': detector_label,
+        'predictor_threshold': predictor_entry['calib_thresh'] if predictor_entry else None,
+        'detector_threshold': detector_entry['calib_thresh'] if detector_entry else None,
         'tier': tier,
         'has_predictor': predictor_entry is not None,
         'has_detector': detector_entry is not None,
     }
 
-# ============================================================================
-# STATEFUL INFERENCE SESSIONS (Fixes Memory Leaks & Real-time Issues)
-# ============================================================================
 
 _detector_sessions = {}
 _predictor_sessions = {}
 
-def _get_or_create_detector_session(patient_id: str, n_channels: int):
-    """Maintains a lightweight, bounded rolling window for real-time detection.
-    
-    Includes a raw EEG buffer for proper bandpass filtering (matching notebook).
-    """
-    if patient_id not in _detector_sessions:
-        _detector_sessions[patient_id] = {
-            # Pre-fill with zeros so the MA doesn't over-react to early values
-            'fused_probs': deque([0.0] * MA_S, maxlen=MA_S),
-            'consec': 0,
-            'emb_buffer': deque(maxlen=WGAN_SEQ_LEN_DETECTION),
-            # Raw EEG buffer — accumulates incoming windows so the bandpass
-            # filter can operate on a long continuous signal (matching notebook).
-            'raw_buffer': np.zeros((n_channels, 0), dtype=np.float32),
-        }
+
+def _fresh_session(n_channels: int, seq_len: int, model_path: str) -> dict:
+    return {
+        'fused_probs': deque([0.0] * MA_S, maxlen=MA_S),
+        'consec': 0,
+        'emb_buffer': deque(maxlen=seq_len),
+        'raw_buffer': np.zeros((n_channels, 0), dtype=np.float32),
+        'model_path': model_path,
+    }
+
+
+def _get_or_create_detector_session(patient_id: str, entry: dict):
+    n_channels = entry.get('n_channels', 18)
+    model_path = entry['path']
+    existing = _detector_sessions.get(patient_id)
+    if existing is None or existing.get('model_path') != model_path:
+        _detector_sessions[patient_id] = _fresh_session(
+            n_channels, WGAN_SEQ_LEN_DETECTION, model_path,
+        )
     return _detector_sessions[patient_id]
 
-def _get_or_create_predictor_session(patient_id: str, n_channels: int):
-    """Maintains a lightweight, bounded rolling window for real-time prediction.
-    
-    Includes a raw EEG buffer for proper bandpass filtering (matching notebook).
-    """
-    if patient_id not in _predictor_sessions:
-        _predictor_sessions[patient_id] = {
-            # Pre-fill with zeros so the MA doesn't over-react to early values
-            'fused_probs': deque([0.0] * MA_S, maxlen=MA_S),
-            'consec': 0,
-            'emb_buffer': deque(maxlen=WGAN_SEQ_LEN_PREDICTION),
-            # Raw EEG buffer — accumulates incoming windows so the bandpass
-            # filter can operate on a long continuous signal (matching notebook).
-            'raw_buffer': np.zeros((n_channels, 0), dtype=np.float32),
-        }
+
+def _get_or_create_predictor_session(patient_id: str, entry: dict):
+    n_channels = entry.get('n_channels', 18)
+    model_path = entry['path']
+    existing = _predictor_sessions.get(patient_id)
+    if existing is None or existing.get('model_path') != model_path:
+        _predictor_sessions[patient_id] = _fresh_session(
+            n_channels, WGAN_SEQ_LEN_PREDICTION, model_path,
+        )
     return _predictor_sessions[patient_id]
 
 
+def reset_patient_sessions(patient_id: str) -> None:
+    _detector_sessions.pop(patient_id, None)
+    _predictor_sessions.pop(patient_id, None)
+
+
 def _filter_from_buffer(raw_buffer: np.ndarray, filter_fn, clen: int) -> np.ndarray:
-    """Apply bandpass filter to the accumulated buffer, return last `clen` samples.
-    
-    This is the KEY fix: the notebook's seizure_alarm_system() filters the ENTIRE
-    recording with sosfiltfilt, then extracts 5-second windows. We emulate this by
-    filtering our accumulated buffer (up to 60 seconds) and taking the last window.
-    
-    With a long buffer, sosfiltfilt's edge artifacts only affect the first/last
-    few samples of the buffer — the window we extract from the end is clean.
-    """
     filtered = filter_fn(raw_buffer, sfreq=FS)
     return filtered[:, -clen:]
 
 
 def _run_detector_window(entry: dict, data_np: np.ndarray, patient_id: str, device) -> tuple:
     expected_channels = entry.get('n_channels', 18)
-    session = _get_or_create_detector_session(patient_id, expected_channels)
-    
+    session = _get_or_create_detector_session(patient_id, entry)
+
     model = entry['model'].to(device)
     alarm_thresh = entry['calib_thresh']
     train_ref_mu = entry['train_ref_mu']
     train_ref_std = entry['train_ref_std']
     disc_calibration = entry.get('disc_calibration', 0.0)
     discriminator = entry.get('discriminator')
-    
-    # 1. Adjust channels to match model expectation
+
     adjusted_data = adjust_channels(data_np, expected_channels=expected_channels)
-    
-    # 2. ACCUMULATE raw samples into the persistent buffer (bounded to 60s)
+
     session['raw_buffer'] = np.concatenate(
         [session['raw_buffer'], adjusted_data], axis=1
-    )[:, -RAW_BUFFER_SAMPLES:]  # Keep last 60 seconds only
-    
-    # 3. Need at least one full window in the buffer to run inference
+    )[:, -RAW_BUFFER_SAMPLES:]
+
     if session['raw_buffer'].shape[1] < CLEN:
         return 0.0, 'normal'
-    
-    # 4. Filter the ENTIRE accumulated buffer, extract last CLEN samples
-    #    This matches the notebook: filter whole recording, then slice windows.
+
     filtered_window = _filter_from_buffer(session['raw_buffer'], detection_clep, CLEN)
-    
-    # 5. Normalize using training reference stats (same as notebook)
+
     norm_data = (filtered_window - train_ref_mu) / (train_ref_std + 1e-8)
-    
+
     win_t = torch.from_numpy(norm_data).float().unsqueeze(0).to(device)
-    
+
     with torch.no_grad():
         feats = model.encode(win_t)
         p_ict = F.softmax(model.fc(feats), dim=1)[0, 1].item()
-        
-        # Discriminator suppression (identical to notebook)
+
         suppression = 1.0
         if discriminator is not None:
             session['emb_buffer'].append(feats.squeeze(0).cpu())
@@ -385,61 +336,52 @@ def _run_detector_window(entry: dict, data_np: np.ndarray, patient_id: str, devi
                 raw_d = discriminator(seq).item()
                 disc_int_p = float(torch.sigmoid(torch.tensor(raw_d - disc_calibration)).item())
                 suppression = (1.0 - disc_int_p)
-        
+
         fused_prob = p_ict * suppression
         session['fused_probs'].append(fused_prob)
-    
-    # 6. Real-time Causal Smoothing
+
     current_smoothed = float(np.mean(session['fused_probs']))
-    
-    # 7. Real-time Alarm Check (Stateful, no history looping)
+
     if current_smoothed >= alarm_thresh:
         session['consec'] += 1
     else:
         session['consec'] = 0
-    
+
     label = 'ictal' if session['consec'] >= DELTA0_S_DETECTION else 'normal'
-    
+
     return current_smoothed, label
 
 
 def _run_predictor_window(entry: dict, data_np: np.ndarray, patient_id: str, device) -> tuple:
     expected_channels = entry.get('n_channels', 18)
-    session = _get_or_create_predictor_session(patient_id, expected_channels)
-    
+    session = _get_or_create_predictor_session(patient_id, entry)
+
     model = entry['model'].to(device)
     alarm_thresh = entry['calib_thresh']
     train_ref_mu = entry['train_ref_mu']
     train_ref_std = entry['train_ref_std']
     disc_calibration = entry.get('disc_calibration', 0.0)
     discriminator = entry.get('discriminator')
-    
-    # 1. Adjust channels to match model expectation
+
     adjusted_data = adjust_channels(data_np, expected_channels=expected_channels)
-    
-    # 2. ACCUMULATE raw samples into the persistent buffer (bounded to 60s)
+
     session['raw_buffer'] = np.concatenate(
         [session['raw_buffer'], adjusted_data], axis=1
-    )[:, -RAW_BUFFER_SAMPLES:]  # Keep last 60 seconds only
-    
-    # 3. Need at least one full window in the buffer to run inference
+    )[:, -RAW_BUFFER_SAMPLES:]
+
     if session['raw_buffer'].shape[1] < CLEN:
         return 0.0, 'normal'
-    
-    # 4. Filter the ENTIRE accumulated buffer, extract last CLEN samples
-    #    This matches the notebook: filter whole recording, then slice windows.
+
     filtered_window = _filter_from_buffer(session['raw_buffer'], prediction_clep, CLEN)
-    
-    # 5. Normalize using training reference stats (same as notebook)
+
     norm_data = (filtered_window - train_ref_mu) / (train_ref_std + 1e-8)
-    
+
     win_t = torch.from_numpy(norm_data).float().unsqueeze(0).to(device)
-    
+
     with torch.no_grad():
         feats = model.encode(win_t)
         p_pre = F.softmax(model.fc(feats), dim=1)[0, 1].item()
-        
-        # Discriminator suppression (identical to notebook)
+
         suppression = 1.0
         if discriminator is not None:
             session['emb_buffer'].append(feats.squeeze(0).cpu())
@@ -448,21 +390,19 @@ def _run_predictor_window(entry: dict, data_np: np.ndarray, patient_id: str, dev
                 raw_d = discriminator(seq).item()
                 disc_int_p = float(torch.sigmoid(torch.tensor(raw_d - disc_calibration)).item())
                 suppression = (1.0 - disc_int_p)
-        
+
         fused_prob = p_pre * suppression
         session['fused_probs'].append(fused_prob)
-    
-    # 6. Real-time Causal Smoothing
+
     current_smoothed = float(np.mean(session['fused_probs']))
-    
-    # 7. Real-time Alarm Check
+
     if current_smoothed >= alarm_thresh:
         session['consec'] += 1
     else:
         session['consec'] = 0
-    
+
     label = 'preictal' if session['consec'] >= DELTA0_S_PREDICTION else 'normal'
-    
+
     return current_smoothed, label
 
 
@@ -472,6 +412,8 @@ def _no_models_response() -> dict:
         'detector_prob': None,
         'predictor_label': None,
         'detector_label': None,
+        'predictor_threshold': None,
+        'detector_threshold': None,
         'tier': 'none',
         'has_predictor': False,
         'has_detector': False,

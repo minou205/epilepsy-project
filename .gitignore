@@ -16,7 +16,7 @@ venv/
 .venv/
 env/
 .env
-
+data/
 *.sqlite3
 *.db
 EEG_Backend/ehss.db

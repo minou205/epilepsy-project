@@ -28,7 +28,7 @@ function autoDetectBackendUrl(): string {
         return `http://${host}:8000`;
       }
     }
-  } catch { /* ignore */ }
+  } catch {}
   return STALE_PLACEHOLDER;
 }
 
@@ -40,11 +40,10 @@ export interface AppSettings {
   serverBaseUrl        : string;
   inferenceIntervalMs  : number;
   helperPushToken      : string | null;
-  // New fields synced from profile
   role                 : UserRole;
   consentToTrain       : boolean;
-  generalModelConfig   : string;        // 'both' | 'prediction_only' | 'detection_only' | 'none'
-  normalAlarmTime      : string | null;  // "HH:MM"
+  generalModelConfig   : string;
+  normalAlarmTime      : string | null;
   alarmSoundEnabled    : boolean;
 }
 
@@ -63,7 +62,6 @@ const DEFAULTS: AppSettings = {
   alarmSoundEnabled    : true,
 };
 
-// ── Context ────────────────────────────────────────────────────────────────────
 
 interface AppSettingsContextValue {
   settings      : AppSettings;
@@ -73,7 +71,6 @@ interface AppSettingsContextValue {
 
 const AppSettingsContext = createContext<AppSettingsContextValue | null>(null);
 
-// ── Provider ───────────────────────────────────────────────────────────────────
 
 export function AppSettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULTS);
@@ -88,9 +85,7 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
             saved.serverBaseUrl = autoDetectBackendUrl();
           }
           setSettings({ ...DEFAULTS, ...saved });
-        } catch {
-          // corrupted - use defaults
-        }
+        } catch {}
       }
       setLoaded(true);
     });
@@ -111,7 +106,6 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// ── Hook ───────────────────────────────────────────────────────────────────────
 
 export function useAppSettings() {
   const ctx = useContext(AppSettingsContext);

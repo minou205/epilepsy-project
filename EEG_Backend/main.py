@@ -8,12 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
 from config import MODELS_DIR, GENERAL_PREDICTOR_PT, GENERAL_DETECTOR_PT
-from routers import patients, data_upload, model_management, notifications, training, inference, archive, headset
+from routers import data_upload, model_management, notifications, training, inference, archive, headset
 from services.discovery import initialize_service_discovery, shutdown_service_discovery
 
-# ── Logging ────────────────────────────────────────────────────────────────────
-# Configure a basic handler so all logger.info/warning/error calls are visible
-# in the terminal.  Without this, log messages go nowhere by default.
 logging.basicConfig(
     level  = logging.INFO,
     format = '%(asctime)s [%(name)s] %(levelname)s: %(message)s',
@@ -22,24 +19,22 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Database ───────────────────────────────────────────────────────────────
     await init_db()
 
-    # ── Service discovery publishes a public backend URL to Supabase ----------
-    # Optional: set ENABLE_SERVICE_DISCOVERY=1 to enable (disabled by default for local dev)
     enable_discovery = os.getenv('ENABLE_SERVICE_DISCOVERY', '0').lower() in ('1', 'true', 'yes')
     if enable_discovery:
         try:
             await initialize_service_discovery(app)
         except Exception:
             logging.exception('[startup] Service discovery initialization failed')
-    else:
-        logging.info('[startup] Service discovery disabled (set ENABLE_SERVICE_DISCOVERY=1 to enable)')
 
-    # ── Preload general .pt models into inference cache ─────────────────────
-    # Server-side inference: models are loaded into memory and kept warm.
-    # No ONNX conversion needed — we use PyTorch .pt files directly.
-    print('[startup] Preloading general models for server-side inference...', flush=True)
+    try:
+        from services.training_queue import training_queue
+        await training_queue.recover_interrupted_jobs()
+        training_queue.start()
+    except Exception:
+        logging.exception('[startup] Training queue initialization failed')
+
     try:
         from services.inference_service import model_cache
         loaded = []
@@ -52,14 +47,18 @@ async def lifespan(app: FastAPI):
         if loaded:
             print(f'[startup] Preloaded: {", ".join(loaded)}', flush=True)
         else:
-            print('[startup] No general .pt models found — place them at:', flush=True)
-            print(f'  Predictor: {GENERAL_PREDICTOR_PT}', flush=True)
-            print(f'  Detector:  {GENERAL_DETECTOR_PT}', flush=True)
+            print('[startup] No general .pt models found', flush=True)
     except Exception:
         print('[startup] Model preloading encountered an error:', flush=True)
         print(traceback.format_exc(), flush=True)
 
     yield
+
+    try:
+        from services.training_queue import training_queue
+        training_queue.stop()
+    except Exception:
+        logging.exception('[shutdown] Training queue shutdown failed')
 
     try:
         await shutdown_service_discovery(app)
@@ -82,7 +81,6 @@ app.add_middleware(
     allow_headers    = ["*"],
 )
 
-app.include_router(patients.router)
 app.include_router(data_upload.router)
 app.include_router(model_management.router)
 app.include_router(notifications.router)

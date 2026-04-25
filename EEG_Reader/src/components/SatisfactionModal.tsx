@@ -14,8 +14,8 @@ const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'mon
 interface SatisfactionModalProps {
   visible       : boolean;
   seizureCount  : number;
-  onSatisfied   : () => void;   // "Yes" -> stop collection
-  onNotSatisfied: () => void;   // "No" -> continue
+  onSatisfied   : () => void;
+  onNotSatisfied: () => void;
 }
 
 export default function SatisfactionModal({

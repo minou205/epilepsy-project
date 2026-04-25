@@ -21,30 +21,30 @@ interface TabDef {
 
 const TABS_BY_ROLE: Record<UserRole, TabDef[]> = {
   patient: [
-    { screen: 'community', icon: '\u2302', label: 'Community' },
-    { screen: 'tracker',   icon: '\u25CE', label: 'Tracker'   },
-    { screen: 'archive',   icon: '\u2630', label: 'Archive'   },
-    { screen: 'settings',  icon: '\u2699', label: 'Settings'  },
+    { screen: 'community', icon: '⌂', label: 'Community' },
+    { screen: 'tracker',   icon: '◎', label: 'Tracker'   },
+    { screen: 'archive',   icon: '☰', label: 'Archive'   },
+    { screen: 'settings',  icon: '⚙', label: 'Settings'  },
   ],
   helper: [
-    { screen: 'community', icon: '\u2302', label: 'Community' },
-    { screen: 'archive',   icon: '\u2630', label: 'Archive'   },
-    { screen: 'settings',  icon: '\u2699', label: 'Settings'  },
+    { screen: 'community', icon: '⌂', label: 'Community' },
+    { screen: 'archive',   icon: '☰', label: 'Archive'   },
+    { screen: 'settings',  icon: '⚙', label: 'Settings'  },
   ],
   doctor: [
-    { screen: 'community', icon: '\u2302', label: 'Community' },
-    { screen: 'settings',  icon: '\u2699', label: 'Settings'  },
+    { screen: 'community', icon: '⌂', label: 'Community' },
+    { screen: 'settings',  icon: '⚙', label: 'Settings'  },
   ],
   supporter: [
-    { screen: 'community', icon: '\u2302', label: 'Community' },
-    { screen: 'settings',  icon: '\u2699', label: 'Settings'  },
+    { screen: 'community', icon: '⌂', label: 'Community' },
+    { screen: 'settings',  icon: '⚙', label: 'Settings'  },
   ],
 };
 
 interface BottomTabBarProps {
   activeTab    : Screen;
   role         : UserRole;
-  isTracking  ?: boolean;  // show pulsing dot on tracker tab
+  isTracking  ?: boolean;
 }
 
 export default function BottomTabBar({ activeTab, role, isTracking = false }: BottomTabBarProps) {

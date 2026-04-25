@@ -13,12 +13,6 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-// ── TXT serialisation ──────────────────────────────────────────────────────────
-
-/**
- * Serialises a block of multi-channel EEG samples to TXT format:
- * timestamp_ms, channel, sample_index, label, amplitude_uV
- */
 function serialiseSamples(
   channels      : string[],
   buffers       : Map<string, Float32Array>,
@@ -45,8 +39,6 @@ function serialiseSamples(
   return rows.join('\n') + '\n';
 }
 
-// ── Seizure data (21 minutes: 20 preictal + 1 ictal) ──────────────────────────
-
 export interface SeizureDataPackage {
   seizureId       : string;
   patientId       : string;
@@ -57,19 +49,6 @@ export interface SeizureDataPackage {
   samplingRate    : number;
 }
 
-/**
- * Captures up to the last 21 minutes of EEG data from the long buffer.
- *
- * If less than 21 minutes is available the function still proceeds with
- * whatever data exists — better something than nothing.
- *
- * Split logic (based on actual available seconds T):
- *   T >= 2 min  → last 1 min = ictal,  everything before = preictal
- *   T <  2 min  → all data labelled ictal (too short for a preictal window)
- *   T == 0      → return null
- *
- * Both files share the same seizureId.
- */
 export async function collectSeizureData(
   getLongBuffer: (ch: string, secs: number) => Float32Array | null,
   allChannels  : string[],
@@ -79,10 +58,9 @@ export async function collectSeizureData(
 
   await ensureDir();
 
-  const IDEAL_TOTAL_SECS  = 21 * 60; // 21 min ideal window
-  const MIN_ICTAL_SECS    =  1 * 60; // always try to reserve 1 min as ictal
+  const IDEAL_TOTAL_SECS  = 21 * 60;
+  const MIN_ICTAL_SECS    =  1 * 60;
 
-  // Collect all channels — getLongBufferSnapshot now returns whatever is available
   const buffers = new Map<string, Float32Array>();
   const channels: string[] = [];
 
@@ -96,20 +74,17 @@ export async function collectSeizureData(
 
   if (channels.length === 0) return null;
 
-  // Derive actual duration from the first channel (all channels have the same length)
   const totalSamples  = buffers.get(channels[0])!.length;
   const totalSecs     = totalSamples / samplingRate;
   const now           = Date.now();
   const capturedAt    = new Date().toISOString();
   const seizureId     = generateId();
 
-  // Dynamic split
   const ictalSecs     = totalSecs >= 2 * 60 ? MIN_ICTAL_SECS : totalSecs;
   const preictalSecs  = totalSecs - ictalSecs;
   const ictalSamples  = Math.round(ictalSecs    * samplingRate);
   const preictalSamples = totalSamples - ictalSamples;
 
-  // Preictal slice (may be empty if < 2 min of data)
   const preictalBufs = new Map<string, Float32Array>();
   for (const ch of channels) {
     preictalBufs.set(ch, buffers.get(ch)!.subarray(0, preictalSamples));
@@ -119,7 +94,6 @@ export async function collectSeizureData(
     'preictal', now - totalSecs * 1000, samplingRate,
   );
 
-  // Ictal slice (always the last ictalSecs of data)
   const ictalBufs = new Map<string, Float32Array>();
   for (const ch of channels) {
     ictalBufs.set(ch, buffers.get(ch)!.subarray(preictalSamples));
@@ -148,24 +122,18 @@ export async function collectSeizureData(
   };
 }
 
-// ── False-positive feedback data (5 min around the alarm) ─────────────────────
-
 export interface FalsePositivePackage {
   fpId        : string;
   patientId   : string;
   alarmId     : string;
-  alarmType   : string;   // 'prediction' | 'detection'
-  modelTier   : string;   // which model fired the alarm
+  alarmType   : string;
+  modelTier   : string;
   capturedAt  : string;
   filePath    : string;
   channelNames: string[];
   samplingRate: number;
 }
 
-/**
- * Captures 5 minutes of EEG immediately preceding the false alarm.
- * Labelled 'false_positive' — included in the next training run as golden negatives.
- */
 export async function collectFalsePositiveData(
   getLongBuffer: (ch: string, secs: number) => Float32Array | null,
   allChannels  : string[],
@@ -178,7 +146,7 @@ export async function collectFalsePositiveData(
 
   await ensureDir();
 
-  const WINDOW_SECS = 5 * 60;   // 5 minutes is enough context for a false-positive segment
+  const WINDOW_SECS = 5 * 60;
 
   const buffers  = new Map<string, Float32Array>();
   const channels : string[] = [];
@@ -219,8 +187,6 @@ export async function collectFalsePositiveData(
   };
 }
 
-// ── Normal data (30 min) ───────────────────────────────────────────────────────
-
 export interface NormalDataPackage {
   fileId      : string;
   patientId   : string;
@@ -239,7 +205,7 @@ export async function collectNormalData(
 
   await ensureDir();
 
-  const NORMAL_SECS = 30 * 60; // 1800 s
+  const NORMAL_SECS = 30 * 60;
 
   const buffers = new Map<string, Float32Array>();
   const channels: string[] = [];

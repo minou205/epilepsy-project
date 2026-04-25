@@ -1,14 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 
-// ── Configuration ─────────────────────────────────────────────────────────────
-// Get these from: Supabase Dashboard -> Settings -> API
-//   * Project URL  -> SUPABASE_URL
-//   * anon public  -> SUPABASE_ANON_KEY
 export const SUPABASE_URL      = 'https://lgxybjdacsjzbmdsgoxo.supabase.co';
 export const SUPABASE_ANON_KEY = 'sb_publishable_To2cxx8axCm8sluVV8g6lA_XefKPJlx';
 
-// Dev-time guard: warn loudly if credentials are still placeholders.
 if (__DEV__ && (
   SUPABASE_URL.includes('YOUR_PROJECT_ID') ||
   SUPABASE_ANON_KEY.includes('YOUR_ANON_PUBLIC_KEY')
@@ -21,7 +16,6 @@ if (__DEV__ && (
   );
 }
 
-// ── Client ────────────────────────────────────────────────────────────────────
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     storage           : AsyncStorage,
@@ -31,12 +25,11 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
-// ── Profile type (mirrors the `profiles` table) ──────────────────────────────
 export type UserRole = 'patient' | 'helper' | 'doctor' | 'supporter';
 
 export interface UserProfile {
-  id                          : string;   // UUID - FK -> auth.users.id
-  patient_name                : string;   // legacy, kept for compat
+  id                          : string;
+  patient_name                : string;
   full_name                   : string;
   username                    : string;
   birthday                    : string | null;
@@ -50,10 +43,12 @@ export interface UserProfile {
   doctor_verified             : boolean;
   show_name_in_posts          : boolean;
   data_usage_consent          : boolean;
-  normal_alarm_time           : string | null;   // "HH:MM"
-  last_normal_collection      : string | null;   // ISO date
-  general_model_config        : string;          // 'both' | 'prediction_only' | 'detection_only' | 'none'
+  normal_alarm_time           : string | null;
+  last_normal_collection      : string | null;
+  general_model_config        : string;
   tracker_notifications_enabled: boolean;
   alarm_sound_enabled         : boolean;
+  expo_push_token             : string | null;
+  train_next_version          : boolean;
   created_at                  : string;
 }

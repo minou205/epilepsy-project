@@ -10,7 +10,7 @@ import {
   collectNormalData as collectNormalDataPackage,
   collectFalsePositiveData,
 } from '../services/DataCollector';
-import { BackendClient, HeadsetMismatchError } from '../services/BackendClient';
+import { BackendClient, HeadsetMismatchError, CooldownError, type DataCounts } from '../services/BackendClient';
 import {
   HeadsetInfo,
   fetchHeadset,
@@ -20,41 +20,25 @@ import {
   scheduleSeizureButtonNotification,
   cancelSeizureButtonNotification,
   triggerAlarmNotification,
+  type TrackerNotificationStats,
 } from '../services/NotificationService';
 import {
   saveAlarmToArchive,
   syncAlarmToBackend,
   ArchivedAlarm,
 } from '../services/ArchiveStorage';
+import { useAuth } from '../services/AuthContext';
 
-// ── Model channel contract ──────────────────────────────────────────────────
-// Default 18-channel layout used when no patient headset has been registered.
-// Once the patient registers a headset, that headset's exact channel list
-// (any count between 9 and 18) becomes the source of truth.
 const CHANNELS_18 = [
-  // Left temporal chain
   'FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1',
-  // Right temporal chain
   'FP2-F8', 'F8-T8', 'T8-P8', 'P8-O2',
-  // Left parasagittal chain
   'FP1-F3', 'F3-C3', 'C3-P3', 'P3-O1',
-  // Right parasagittal chain
   'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2',
-  // Midline
   'FZ-CZ',  'CZ-PZ',
 ] as const;
 
-// Model input: [18, 1280] — 1280 samples = 5 seconds at 256 Hz
 const DEFAULT_WINDOW_SECS = 5;
 
-// ── Adapter: channel-agnostic → fixed 18-channel model input ───────────────
-/**
- * Maps an arbitrary incoming stream (N channels, any labels) to the fixed
- * 18-channel layout the model expects. Returns number[][] for HTTP transport.
- *
- * - Channels present in the stream are looked up case-insensitively.
- * - Missing channels → zero-padding.
- */
 function mapToModel(
   getLongBuffer  : (ch: string, secs: number) => Float32Array | null,
   incomingLabels : string[],
@@ -65,7 +49,6 @@ function mapToModel(
   const windowSamples = windowSecs * samplingRate;
   const out: number[][] = [];
 
-  // Case-insensitive reverse lookup
   const upperMap = new Map(incomingLabels.map(l => [l.toUpperCase(), l]));
 
   for (let ti = 0; ti < targetLabels.length; ti++) {
@@ -76,12 +59,10 @@ function mapToModel(
       const snap = getLongBuffer(match, windowSecs);
       if (snap && snap.length > 0) {
         if (snap.length >= windowSamples) {
-          // Full window: copy the most-recent windowSamples
           for (let i = 0; i < windowSamples; i++) {
             row[i] = snap[snap.length - windowSamples + i];
           }
         } else {
-          // Partial data: right-align so the most-recent samples are at the end
           const offset = windowSamples - snap.length;
           for (let i = 0; i < snap.length; i++) {
             row[offset + i] = snap[i];
@@ -95,8 +76,6 @@ function mapToModel(
 
   return out;
 }
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -119,8 +98,6 @@ function buildAlarmMessage(
   }
 }
 
-// ── Public API type ──────────────────────────────────────────────────────────
-
 export interface TrackerSessionAPI {
   status              : TrackerStatus;
   statusMessage       : string;
@@ -131,15 +108,18 @@ export interface TrackerSessionAPI {
   isSignalLost        : boolean;
   predictorHistory    : number[];
   detectorHistory     : number[];
-  /** true when satisfaction modal should show */
+  predictorThreshold  : number;
+  detectorThreshold   : number;
   showSatisfaction    : boolean;
   satisfactionCount   : number;
-  /** true while collecting 30-min normal data */
   collectingNormal    : boolean;
-  /** Locked headset for this patient (null until first upload registers it). */
   headset             : HeadsetInfo | null;
-  /** Set when an upload was rejected because channels don't match the locked headset. */
   headsetMismatch     : { expected: string[]; got: string[] } | null;
+  pendingAcceptance   : boolean;
+  pendingTier         : string | null;
+  seizureCount        : number;
+  normalCount         : number;
+  nextTrainAt         : number;
 
   start               : () => void;
   stop                : () => void;
@@ -147,21 +127,21 @@ export interface TrackerSessionAPI {
   collectNormalData   : () => void;
   dismissAlarm        : () => void;
   confirmAlarm        : (alarmId: string, confirmed: boolean) => void;
-  rateAlarm           : (alarmId: string, rating: number) => void;
   markFalseAlarm      : (alarmId: string) => Promise<void>;
   onSatisfactionAnswer: (satisfied: boolean) => void;
-  /** Dismiss the mismatch banner without changing the registered headset. */
   clearHeadsetMismatch: () => void;
-  /** User confirmed they swapped headsets — wipe data + lock so next upload re-registers. */
   confirmHeadsetReset : () => Promise<void>;
+  acceptNewModel      : () => Promise<void>;
 }
-
-// ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useTrackerSession(
   eegSession  : EEGSession,
   appSettings : AppSettings,
 ): TrackerSessionAPI {
+
+  const { profile } = useAuth();
+  const trainNextVersionRef = useRef<boolean>(true);
+  trainNextVersionRef.current = profile?.train_next_version ?? true;
 
   const [status,            setStatus           ] = useState<TrackerStatus>('idle');
   const [statusMessage,     setStatusMessage    ] = useState('Waiting for EEG connection...');
@@ -171,11 +151,18 @@ export function useTrackerSession(
   const [isSignalLost,      setIsSignalLost     ] = useState(false);
   const [predictorHistory,  setPredictorHistory ] = useState<number[]>([]);
   const [detectorHistory,   setDetectorHistory  ] = useState<number[]>([]);
+  const [predictorThreshold, setPredictorThreshold] = useState(0.5);
+  const [detectorThreshold,  setDetectorThreshold ] = useState(0.5);
   const [showSatisfaction,  setShowSatisfaction ] = useState(false);
   const [satisfactionCount, setSatisfactionCount] = useState(0);
   const [collectingNormal,  setCollectingNormal ] = useState(false);
   const [headset,           setHeadset          ] = useState<HeadsetInfo | null>(null);
   const [headsetMismatch,   setHeadsetMismatch  ] = useState<{ expected: string[]; got: string[] } | null>(null);
+  const [pendingAcceptance, setPendingAcceptance] = useState(false);
+  const [pendingTier,       setPendingTier      ] = useState<string | null>(null);
+  const [seizureCount,      setSeizureCount     ] = useState(0);
+  const [normalCount,       setNormalCount      ] = useState(0);
+  const [nextTrainAt,       setNextTrainAt      ] = useState(5);
 
   const loopRef           = useRef<ReturnType<typeof setInterval> | null>(null);
   const tierRef           = useRef<ModelTier>('none');
@@ -183,18 +170,20 @@ export function useTrackerSession(
   const isRunningRef      = useRef(false);
   const activeAlarmRef    = useRef<AlarmEvent | null>(null);
   const errorCountRef     = useRef(0);
-  const userWantsRunning  = useRef(false); // true after user presses START
+  const userWantsRunning  = useRef(false);
   const runInferenceRef   = useRef<() => void>(() => {});
   const settingsRef       = useRef(appSettings);
   settingsRef.current     = appSettings;
   const headsetRef        = useRef<HeadsetInfo | null>(null);
   headsetRef.current      = headset;
-  const MAX_SILENT_ERRORS = 3; // show error after this many consecutive failures
+  const MAX_SILENT_ERRORS = 3;
+  const ALARM_COOLDOWN_MS         = 10 * 60 * 1000;
+  const lastPredictionAlarmRef    = useRef(0);
+  const lastDetectionAlarmRef     = useRef(0);
 
-  // Alarm recording: accumulates probability traces while an alarm is active
   const alarmRecordingRef = useRef<{
     alarmId        : string;
-    alarmEvent     : AlarmEvent;          // snapshot — avoids stale closure in timers
+    alarmEvent     : AlarmEvent;
     predictorProbs : number[];
     detectorProbs  : number[];
     timestamps     : number[];
@@ -202,9 +191,7 @@ export function useTrackerSession(
     confirmTimer   : ReturnType<typeof setTimeout> | null;
   } | null>(null);
 
-  const MAX_HISTORY_POINTS = 60; // ~5 min at 5s intervals
-
-  // ── Signal checker ─────────────────────────────────────────────────────────
+  const MAX_HISTORY_POINTS = 60;
 
   useEffect(() => {
     checkerRef.current = new SignalChecker(eegSession, (lost) => {
@@ -224,8 +211,6 @@ export function useTrackerSession(
     return () => checkerRef.current?.destroy();
   }, [eegSession]);
 
-  // ── Inference loop ─────────────────────────────────────────────────────────
-
   function stopLoop() {
     if (loopRef.current) { clearInterval(loopRef.current); loopRef.current = null; }
     isRunningRef.current = false;
@@ -240,14 +225,11 @@ export function useTrackerSession(
     const sr             = eegSession.config.samplingRate;
     const incomingLabels = eegSession.config.channels;
 
-    // Use the patient's locked headset channel list if available; otherwise
-    // fall back to the default 18-channel layout (for first-run / general model).
     const targetLabels: readonly string[] =
       headsetRef.current?.channelNames && headsetRef.current.channelNames.length > 0
         ? headsetRef.current.channelNames
         : CHANNELS_18;
 
-    // Build [E][1280] from the long buffer
     const eegData = mapToModel(
       eegSession.getLongBufferSnapshot,
       incomingLabels,
@@ -264,14 +246,12 @@ export function useTrackerSession(
         appSettings.generalModelConfig ?? 'both',
       );
 
-      // Reset error count on success
       errorCountRef.current = 0;
 
       const tier = result.tier as ModelTier;
       tierRef.current = tier;
       setCurrentTier(tier);
 
-      // Append probabilities to history
       if (result.predictorProb !== null) {
         setPredictorHistory(prev => {
           const next = [...prev, result.predictorProb!];
@@ -284,28 +264,34 @@ export function useTrackerSession(
           return next.length > MAX_HISTORY_POINTS ? next.slice(-MAX_HISTORY_POINTS) : next;
         });
       }
+      if (result.predictorThreshold !== null) setPredictorThreshold(result.predictorThreshold);
+      if (result.detectorThreshold  !== null) setDetectorThreshold(result.detectorThreshold);
 
-      // Record to active alarm trace if one is recording
       if (alarmRecordingRef.current) {
         alarmRecordingRef.current.predictorProbs.push(result.predictorProb ?? 0);
         alarmRecordingRef.current.detectorProbs.push(result.detectorProb ?? 0);
         alarmRecordingRef.current.timestamps.push(Date.now());
       }
 
-      // Check alarm thresholds (only fire if no active alarm)
+      const tierLabel = tier === 'general' ? 'General'
+                      : tier === 'none'    ? 'No models'
+                      : `Personal ${tier.toUpperCase()}`;
+      const notifStats: TrackerNotificationStats = {
+        status       : activeAlarmRef.current
+                         ? (activeAlarmRef.current.type === 'detection' ? 'SEIZURE DETECTED' : 'SEIZURE PREDICTED')
+                         : 'Tracking Active',
+        predictionPct: result.predictorProb !== null ? result.predictorProb * 100 : null,
+        detectionPct : result.detectorProb  !== null ? result.detectorProb  * 100 : null,
+        tier         : tierLabel,
+      };
+      scheduleSeizureButtonNotification(notifStats).catch(() => {});
+
       if (!activeAlarmRef.current) {
-        // The backend has already performed sustained alarm detection!
-        // Trust the labels it returns:
-        // - predictorLabel='preictal' → backend determined DELTA0_S=30 seconds sustained
-        // - detectorLabel='ictal' → backend determined DELTA0_S=3 seconds sustained
-        // No need for client-side double-checking.
-        
         if (result.predictorLabel === 'preictal') {
           fireAlarm('prediction', tier);
         } else if (result.detectorLabel === 'ictal') {
           fireAlarm('detection', tier);
         } else {
-          // Build accurate status message based on what models are active
           const tierLabel = tier === 'general' ? 'General (weak)'
                          : tier === 'none'    ? 'No models'
                          : `Personal ${tier.toUpperCase()}`;
@@ -326,25 +312,27 @@ export function useTrackerSession(
       console.error(`[Tracker] Inference error (#${errorCountRef.current}):`, err?.message ?? err);
 
       if (errorCountRef.current >= MAX_SILENT_ERRORS) {
-        // Show user-visible error after repeated failures
         const msg = err?.message?.includes('Network request failed')
           ? 'Backend unreachable — check server connection'
           : `Inference error — ${(err?.message ?? 'unknown error').slice(0, 60)}`;
         setStatusMessage(msg);
-        setStatus('running'); // keep loop alive, just show error
+        setStatus('running');
       }
-      // Keep the loop running — next cycle may succeed
     }
   }, [eegSession, appSettings]);
 
-  // Keep ref current so setInterval always calls the latest version
   runInferenceRef.current = runInference;
 
-  // ── Fire alarm ─────────────────────────────────────────────────────────────
-
   function fireAlarm(type: 'prediction' | 'detection', tier: ModelTier) {
-    const deadline = type === 'prediction' ? 60 * 60 * 1000 : 60 * 1000; // 1h or 1m
-    const confirmDelay = type === 'prediction' ? 15 * 60 * 1000 : 0;     // 15m or immediate
+    const now = Date.now();
+    const lastRef = type === 'prediction' ? lastPredictionAlarmRef : lastDetectionAlarmRef;
+    if (now - lastRef.current < ALARM_COOLDOWN_MS) {
+      return;
+    }
+    lastRef.current = now;
+
+    const deadline = type === 'prediction' ? 60 * 60 * 1000 : 60 * 1000;
+    const confirmDelay = type === 'prediction' ? 15 * 60 * 1000 : 0;
 
     const event: AlarmEvent = {
       id                  : generateId(),
@@ -355,7 +343,6 @@ export function useTrackerSession(
       confirmationDeadline: Date.now() + deadline,
       confirmed           : null,
       probabilityTrace    : { predictorProbs: [], detectorProbs: [], timestamps: [] },
-      rating              : null,
     };
 
     activeAlarmRef.current = event;
@@ -363,7 +350,6 @@ export function useTrackerSession(
     setAlarmHistory(prev => [event, ...prev]);
     setStatus(type === 'prediction' ? 'alarm_predict' : 'alarm_detect');
 
-    // Start recording probabilities for this alarm
     alarmRecordingRef.current = {
       alarmId       : event.id,
       alarmEvent    : event,
@@ -376,22 +362,19 @@ export function useTrackerSession(
         : null,
     };
 
-    // Immediate notification for detection, delayed for prediction
     if (type === 'detection') {
       sendConfirmNotification(event.id, type);
     }
 
-    // Only play alarm sound if the user hasn't disabled it in settings
     if (settingsRef.current.alarmSoundEnabled !== false) {
-      triggerAlarmNotification(type, event.message).catch(() => {/* ignore */});
+      triggerAlarmNotification(type, event.message).catch(() => {});
     }
 
-    // Notify helpers (only for personal models)
     if (tier !== 'general' && tier !== 'none') {
       const { patientId, serverBaseUrl } = appSettings;
       if (patientId && serverBaseUrl) {
         new BackendClient(serverBaseUrl)
-          .sendHelperAlarm(patientId, type)
+          .sendHelperAlarm(patientId, type, tier)
           .catch(err => console.error('[Tracker] Helper alarm failed:', err));
       }
     }
@@ -400,24 +383,20 @@ export function useTrackerSession(
   function sendConfirmNotification(_alarmId: string, alarmType: 'prediction' | 'detection' = 'detection') {
     if (settingsRef.current.alarmSoundEnabled === false) return;
     triggerAlarmNotification(alarmType, 'Did you have a seizure? Please confirm in the app.')
-      .catch(() => {/* ignore */});
+      .catch(() => {});
   }
 
   function autoRespondNo(alarmId: string) {
     resolveAlarm(alarmId, false);
   }
 
-  // ── Resolve alarm (confirm or deny) ────────────────────────────────────────
-
   const resolveAlarm = useCallback(async (alarmId: string, confirmed: boolean) => {
     const recording = alarmRecordingRef.current;
     if (!recording || recording.alarmId !== alarmId) return;
 
-    // Clear timers
     if (recording.autoNoTimer)  clearTimeout(recording.autoNoTimer);
     if (recording.confirmTimer) clearTimeout(recording.confirmTimer);
 
-    // Build final trace
     const trace = {
       predictorProbs: recording.predictorProbs,
       detectorProbs : recording.detectorProbs,
@@ -426,7 +405,6 @@ export function useTrackerSession(
 
     alarmRecordingRef.current = null;
 
-    // Update alarm in state
     const updater = (a: AlarmEvent) =>
       a.id === alarmId ? { ...a, confirmed, probabilityTrace: trace } : a;
 
@@ -445,11 +423,9 @@ export function useTrackerSession(
       setStatusMessage('Tracking active — alarm resolved');
     }
 
-    // Find the alarm event for archiving
     const alarm = activeAlarmRef.current ?? alarmHistory.find(a => a.id === alarmId);
     if (!alarm) return;
 
-    // Archive locally
     const archived: ArchivedAlarm = {
       id       : alarmId,
       type     : alarm.type,
@@ -471,11 +447,6 @@ export function useTrackerSession(
     }
   }, [appSettings, alarmHistory]);
 
-  // ── Track EEG connection state ──────────────────────────────────────────────
-  // When connected → show "ready" so user can press START.
-  // When disconnected while running → stop the loop and inform the user.
-  // If user previously pressed START and reconnects → auto-resume.
-
   useEffect(() => {
     const connected  = eegSession.status === 'connected';
     const hasServer  = !!appSettings.serverBaseUrl;
@@ -483,32 +454,23 @@ export function useTrackerSession(
 
     if (connected && hasServer && hasPatient) {
       if (userWantsRunning.current && !isRunningRef.current) {
-        // Auto-resume: user pressed START before, connection recovered
         startLoop();
       } else if (!userWantsRunning.current && !isRunningRef.current) {
         setStatus('ready');
         setStatusMessage('Connected — press START to begin tracking');
       }
     } else if (!connected && isRunningRef.current) {
-      // Connection lost while running
       stopLoop();
-      cancelSeizureButtonNotification().catch(() => {/* ignore */});
+      cancelSeizureButtonNotification().catch(() => {});
       setStatus('idle');
       setStatusMessage('EEG disconnected — tracking stopped');
       setPredictorHistory([]);
       setDetectorHistory([]);
-      // Keep userWantsRunning true so we auto-resume on reconnect
     } else if (!connected) {
       setStatus('idle');
       setStatusMessage('Waiting for EEG connection...');
     }
   }, [eegSession.status, appSettings.serverBaseUrl, appSettings.patientId]);
-
-  // ── Headset auto-fetch on EEG connection ──────────────────────────────────
-  // When the EEG simulator connects (and we know who the patient is), fetch
-  // the locked headset from the backend. If one exists, push its channel list
-  // to the simulator so only those channels stream — guaranteeing every
-  // upload matches the locked layout.
 
   useEffect(() => {
     if (eegSession.status !== 'connected') return;
@@ -530,21 +492,40 @@ export function useTrackerSession(
     return () => { cancelled = true; };
   }, [eegSession.status, appSettings.patientId, appSettings.serverBaseUrl]);
 
+  const eegSessionRef = useRef(eegSession);
+  eegSessionRef.current = eegSession;
+
   const refreshHeadset = useCallback(async () => {
-    const { patientId, serverBaseUrl } = appSettings;
+    const { patientId, serverBaseUrl } = settingsRef.current;
     if (!patientId || !serverBaseUrl) return;
     try {
       const info = await fetchHeadset(serverBaseUrl, patientId);
       setHeadset(info);
       if (info && info.channelNames.length > 0) {
-        eegSession.selectChannels(info.channelNames);
+        eegSessionRef.current.selectChannels(info.channelNames);
       }
     } catch (err: any) {
       console.warn('[Tracker] refreshHeadset failed:', err?.message ?? err);
     }
-  }, [appSettings, eegSession]);
+  }, []);
 
-  // ── Start / Stop helpers ──────────────────────────────────────────────────
+  const refreshDataCounts = useCallback(async () => {
+    const { patientId, serverBaseUrl } = settingsRef.current;
+    if (!patientId || !serverBaseUrl) return;
+    try {
+      const client = new BackendClient(serverBaseUrl);
+      const counts = await client.getDataCounts(patientId);
+      setSeizureCount(counts.seizure_count);
+      setNormalCount(counts.normal_count);
+      setNextTrainAt(counts.next_train_at);
+    } catch (err: any) {
+      console.warn('[Tracker] refreshDataCounts failed:', err?.message ?? err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDataCounts();
+  }, [appSettings.patientId, appSettings.serverBaseUrl]);
 
   function startLoop() {
     if (isRunningRef.current) return;
@@ -552,15 +533,13 @@ export function useTrackerSession(
     errorCountRef.current = 0;
     setStatus('running');
     setStatusMessage('Tracking started...');
-    scheduleSeizureButtonNotification().catch(() => {/* ignore */});
-    // Use ref so the interval always calls the latest runInference closure
+    scheduleSeizureButtonNotification().catch(() => {});
     loopRef.current = setInterval(
       () => runInferenceRef.current(),
       settingsRef.current.inferenceIntervalMs,
     );
   }
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopLoop();
@@ -572,8 +551,6 @@ export function useTrackerSession(
       }
     };
   }, []);
-
-  // ── Public API ─────────────────────────────────────────────────────────────
 
   const start = useCallback(() => {
     if (!eegSession.config || eegSession.status !== 'connected') {
@@ -591,7 +568,7 @@ export function useTrackerSession(
   const stop = useCallback(() => {
     userWantsRunning.current = false;
     stopLoop();
-    cancelSeizureButtonNotification().catch(() => {/* ignore */});
+    cancelSeizureButtonNotification().catch(() => {});
     setStatus('stopped');
     setStatusMessage('Tracking stopped by user.');
     setPredictorHistory([]);
@@ -644,14 +621,12 @@ export function useTrackerSession(
     setStatusMessage('Uploading seizure data...');
     try {
       const client = new BackendClient(serverBaseUrl);
-      const resp = await client.uploadSeizureData(pkg);
+      const resp = await client.uploadSeizureData(pkg, trainNextVersionRef.current);
       setStatusMessage('Seizure data uploaded successfully.');
 
-      // First successful upload (or any subsequent one) — refresh the
-      // locked headset so the UI shows what's actually registered.
-      refreshHeadset().catch(() => {/* ignore */});
+      refreshHeadset().catch(() => {});
+      refreshDataCounts().catch(() => {});
 
-      // Check if satisfaction modal should show
       if (resp.ask_satisfaction) {
         setSatisfactionCount(resp.seizure_count);
         setShowSatisfaction(true);
@@ -661,18 +636,40 @@ export function useTrackerSession(
         ? '\n\nMaximum seizure data limit reached — no more data collection needed.'
         : '';
 
+      const balanceMsg = resp.needs_normal
+        ? `\n\nYou have ${resp.seizure_count} seizure recording${resp.seizure_count !== 1 ? 's' : ''} `
+          + `but only ${resp.normal_count} normal recording${resp.normal_count !== 1 ? 's' : ''}. `
+          + 'Please collect more Normal EEG data so training can start.'
+        : '';
+
+      const trainingMsg = resp.training_queued
+        ? '\n\nNew model training has been queued!'
+        : resp.training_blocked_reason === 'insufficient_normal_data'
+          ? '\n\nTraining is ready but waiting for more normal data.'
+          : '';
+
       Alert.alert(
         'Uploaded',
         (capturedMins >= 21
           ? 'Full 21 minutes of seizure data sent to the server.'
           : `${capturedMins} minute${capturedMins !== 1 ? 's' : ''} of EEG data sent.\nPartial data is still useful for training.`)
-        + (resp.training_queued ? '\n\nNew model training has been queued!' : '')
+        + trainingMsg
+        + balanceMsg
         + maxMsg,
       );
     } catch (err) {
       if (err instanceof HeadsetMismatchError) {
         setHeadsetMismatch({ expected: err.expected, got: err.got });
         setStatusMessage('Headset mismatch — upload rejected.');
+        return;
+      }
+      if (err instanceof CooldownError) {
+        const mins = Math.ceil(err.remainingSecs / 60);
+        setStatusMessage(`Cooldown — wait ${mins} min before next seizure recording.`);
+        Alert.alert(
+          'Please Wait',
+          err.message || `Please wait ${mins} more minute${mins !== 1 ? 's' : ''} before recording more seizure data.`,
+        );
         return;
       }
       console.error('[Tracker] Failed to upload seizure data:', err);
@@ -719,12 +716,20 @@ export function useTrackerSession(
       await client.uploadNormalData(pkg);
 
       setStatusMessage('Normal data uploaded successfully.');
-      refreshHeadset().catch(() => {/* ignore */});
+      refreshHeadset().catch(() => {});
+      refreshDataCounts().catch(() => {});
       Alert.alert('Success', 'Normal EEG data collected and uploaded to the server.');
     } catch (err) {
       if (err instanceof HeadsetMismatchError) {
         setHeadsetMismatch({ expected: err.expected, got: err.got });
         setStatusMessage('Headset mismatch — upload rejected.');
+      } else if (err instanceof CooldownError) {
+        const mins = Math.ceil(err.remainingSecs / 60);
+        setStatusMessage(`Cooldown — wait ${mins} min before next normal recording.`);
+        Alert.alert(
+          'Please Wait',
+          err.message || `Please wait ${mins} more minute${mins !== 1 ? 's' : ''} before recording more normal data.`,
+        );
       } else {
         console.error('[Tracker] Normal data collection failed:', err);
         setStatusMessage('Normal data upload failed — check server connection.');
@@ -750,22 +755,11 @@ export function useTrackerSession(
     resolveAlarm(alarmId, confirmed);
 
     if (confirmed) {
-      // User confirmed a real seizure — collect seizure data
       reportSeizure();
     }
   }, [resolveAlarm, reportSeizure]);
 
-  const rateAlarm = useCallback((alarmId: string, rating: number) => {
-    setAlarmHistory(prev =>
-      prev.map(a => a.id === alarmId ? { ...a, rating } : a)
-    );
-    setActiveAlarm(prev =>
-      prev?.id === alarmId ? { ...prev, rating } : prev
-    );
-  }, []);
-
   const markFalseAlarm = useCallback(async (alarmId: string) => {
-    // Mark as false alarm + resolve as not confirmed
     setAlarmHistory(prev =>
       prev.map(a => a.id === alarmId ? { ...a, isFalseAlarm: true, confirmed: false } : a)
     );
@@ -809,11 +803,64 @@ export function useTrackerSession(
 
   const onSatisfactionAnswer = useCallback((satisfied: boolean) => {
     setShowSatisfaction(false);
-    // The actual profile update (consent_to_train = false) is handled
-    // by the parent component that controls the satisfaction modal
   }, []);
 
-  // ── Headset mismatch actions ───────────────────────────────────────────────
+  useEffect(() => {
+    const { patientId, serverBaseUrl } = appSettings;
+    if (!patientId || !serverBaseUrl) return;
+
+    const client = new BackendClient(serverBaseUrl);
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      try {
+        const st = await client.getTrainingStatus(patientId);
+        if (st.pending_acceptance) {
+          setPendingAcceptance(true);
+          setPendingTier(st.tier);
+          if (timer) { clearInterval(timer); timer = null; }
+        } else if (st.overall_status === 'idle' || st.overall_status === 'failed') {
+          setPendingAcceptance(false);
+          setPendingTier(null);
+          if (timer) { clearInterval(timer); timer = null; }
+        }
+      } catch {}
+    };
+
+    timer = setInterval(poll, 30_000);
+    poll();
+
+    return () => { if (timer) clearInterval(timer); };
+  }, [appSettings.patientId, appSettings.serverBaseUrl]);
+
+  const acceptNewModel = useCallback(async () => {
+    const { patientId, serverBaseUrl } = appSettings;
+    if (!patientId || !serverBaseUrl) return;
+
+    try {
+      const client = new BackendClient(serverBaseUrl);
+      const result = await client.acceptModels(patientId);
+
+      const newTier = result.tier as ModelTier;
+      setCurrentTier(newTier);
+      tierRef.current = newTier;
+
+      setPendingAcceptance(false);
+      setPendingTier(null);
+
+      setPredictorHistory([]);
+      setDetectorHistory([]);
+
+      Alert.alert(
+        'Model Activated',
+        `Your new ${result.tier.toUpperCase()} model is now active. `
+        + `${result.cleaned} old model file${result.cleaned !== 1 ? 's' : ''} cleaned up.`,
+      );
+    } catch (err: any) {
+      console.error('[Tracker] acceptNewModel failed:', err);
+      Alert.alert('Accept Failed', err?.message ?? 'Could not activate the new model.');
+    }
+  }, [appSettings]);
 
   const clearHeadsetMismatch = useCallback(() => {
     setHeadsetMismatch(null);
@@ -843,12 +890,10 @@ export function useTrackerSession(
     }
   }, [appSettings]);
 
-  // ── Tier label helper ──────────────────────────────────────────────────────
-
   function modelVersionLabel(tier: ModelTier): string {
     if (tier === 'none')    return 'No models';
     if (tier === 'general') return 'General';
-    return tier.toUpperCase(); // 'v1' → 'V1'
+    return `Personal ${tier.toUpperCase()}`;
   }
 
   return {
@@ -856,12 +901,16 @@ export function useTrackerSession(
     currentModelVersion: modelVersionLabel(currentTier),
     activeAlarm, alarmHistory, isSignalLost,
     predictorHistory, detectorHistory,
+    predictorThreshold, detectorThreshold,
     showSatisfaction, satisfactionCount,
     collectingNormal,
     headset, headsetMismatch,
+    pendingAcceptance, pendingTier,
+    seizureCount, normalCount, nextTrainAt,
     start, stop, reportSeizure, collectNormalData,
-    dismissAlarm, confirmAlarm, rateAlarm, markFalseAlarm,
+    dismissAlarm, confirmAlarm, markFalseAlarm,
     onSatisfactionAnswer,
     clearHeadsetMismatch, confirmHeadsetReset,
+    acceptNewModel,
   };
 }

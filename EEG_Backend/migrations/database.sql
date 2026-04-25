@@ -18,6 +18,8 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS general_model_config TEXT DEFAULT 
   CHECK (general_model_config IN ('both', 'prediction_only', 'detection_only', 'none'));
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS tracker_notifications_enabled BOOLEAN DEFAULT true;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS alarm_sound_enabled BOOLEAN DEFAULT true;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS expo_push_token TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS train_next_version BOOLEAN DEFAULT true;
 
 -- Migrate existing data: copy patient_name to full_name if not set
 UPDATE profiles SET full_name = patient_name WHERE full_name IS NULL;
@@ -383,3 +385,77 @@ create policy "Allow authenticated users to read system config"
 -- The backend uses a Supabase service_role key to write this table and bypass RLS.
 -- You can optionally insert the initial backend_url row after deployment.
 
+-- =============================================================================
+-- Migration 004: Doctor verifications + helper association requests
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS doctor_verifications (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  doctor_id    UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  document_url TEXT NOT NULL,
+  submitted_at TIMESTAMPTZ DEFAULT now(),
+  status       TEXT DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  reviewed_at  TIMESTAMPTZ,
+  reviewed_by  UUID REFERENCES profiles(id),
+  notes        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_dv_doctor ON doctor_verifications(doctor_id);
+
+ALTER TABLE doctor_verifications ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "dv_select_own" ON doctor_verifications;
+CREATE POLICY "dv_select_own" ON doctor_verifications
+  FOR SELECT TO authenticated USING (auth.uid() = doctor_id);
+
+DROP POLICY IF EXISTS "dv_insert_own" ON doctor_verifications;
+CREATE POLICY "dv_insert_own" ON doctor_verifications
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = doctor_id);
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('doctor-docs', 'doctor-docs', false)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "doctor_docs_insert_own" ON storage.objects;
+CREATE POLICY "doctor_docs_insert_own" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'doctor-docs' AND (storage.foldername(name))[1] = auth.uid()::text);
+
+DROP POLICY IF EXISTS "doctor_docs_select_own" ON storage.objects;
+CREATE POLICY "doctor_docs_select_own" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'doctor-docs' AND (storage.foldername(name))[1] = auth.uid()::text);
+
+CREATE TABLE IF NOT EXISTS helper_requests (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id   UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  helper_id    UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  initiated_by TEXT NOT NULL CHECK (initiated_by IN ('patient','helper')),
+  status       TEXT DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  responded_at TIMESTAMPTZ,
+  UNIQUE(patient_id, helper_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hr_patient ON helper_requests(patient_id);
+CREATE INDEX IF NOT EXISTS idx_hr_helper  ON helper_requests(helper_id);
+
+ALTER TABLE helper_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "hr_select_involved" ON helper_requests;
+CREATE POLICY "hr_select_involved" ON helper_requests
+  FOR SELECT TO authenticated USING (auth.uid() IN (patient_id, helper_id));
+
+DROP POLICY IF EXISTS "hr_insert_self" ON helper_requests;
+CREATE POLICY "hr_insert_self" ON helper_requests
+  FOR INSERT TO authenticated WITH CHECK (
+    (initiated_by = 'patient' AND auth.uid() = patient_id) OR
+    (initiated_by = 'helper'  AND auth.uid() = helper_id)
+  );
+
+DROP POLICY IF EXISTS "hr_update_other" ON helper_requests;
+CREATE POLICY "hr_update_other" ON helper_requests
+  FOR UPDATE TO authenticated USING (
+    (initiated_by = 'patient' AND auth.uid() = helper_id) OR
+    (initiated_by = 'helper'  AND auth.uid() = patient_id)
+  );

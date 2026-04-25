@@ -1,19 +1,3 @@
-"""Flexible-channel personal model training.
-
-Wraps the 3-stage pipeline (CLEP pretrain → finetune → WGAN discriminator)
-from personal_prediction.py / personal_detection.py and makes it work with
-ANY channel count (9..18) — not just the hardcoded 18 of the original files.
-
-Public API matches what training_service.py expects:
-    train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier,
-                    channel_names, headset_name=None)
-    train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier,
-                   channel_names, headset_name=None)
-
-`channel_names` is the patient's locked headset channel list, fetched by
-training_service from the patient_headsets DB table BEFORE training starts.
-This avoids the need to open a DB session inside the training executor.
-"""
 import logging
 import os
 from pathlib import Path
@@ -30,10 +14,6 @@ from services.eeg_data_loader import (
 logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Public API
-# ═══════════════════════════════════════════════════════════════════════════
-
 def train_predictor(
     patient_id      : str,
     patient_data_dir: str | Path,
@@ -43,7 +23,6 @@ def train_predictor(
     channel_names   : list[str],
     headset_name    : str | None = None,
 ) -> tuple[str, dict]:
-    """Train a flexible-channel seizure PREDICTION model for one patient."""
     from services.personal_prediction import (
         build_model, pretrain_clep, finetune_best,
         calibrate_threshold, train_discriminator_wgan, find_hard_interictal,
@@ -89,7 +68,6 @@ def train_detector(
     channel_names   : list[str],
     headset_name    : str | None = None,
 ) -> tuple[str, dict]:
-    """Train a flexible-channel seizure DETECTION model for one patient."""
     from services.personal_detection import (
         build_model, pretrain_clep, finetune_best,
         calibrate_threshold, train_discriminator_wgan, find_hard_interictal,
@@ -126,10 +104,6 @@ def train_detector(
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Shared training pipeline (channel-agnostic)
-# ═══════════════════════════════════════════════════════════════════════════
-
 def _save_checkpoint(
     *,
     model, discriminator, patient_id: str, model_type_label: str, suffix: str,
@@ -138,35 +112,64 @@ def _save_checkpoint(
     train_config_sig, train_config,
     folder: str, n_channels: int, channel_names: list[str],
     sampling_rate: int = 256,
+    base_model_version: str | None = None,
 ) -> str:
-    """Save the .pt checkpoint with full channel metadata.
-
-    Output filename: {folder}/{patient_id}_{suffix}.pt
-    (training_service then renames it to {tier}_{suffix}.pt)
-    """
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f'{patient_id}_{suffix}.pt')
     has_disc = discriminator is not None
     torch.save({
-        'state_dict'       : model.state_dict(),
-        'disc_state_dict'  : discriminator.state_dict() if has_disc else None,
+        'state_dict'        : model.state_dict(),
+        'disc_state_dict'   : discriminator.state_dict() if has_disc else None,
         'has_discriminator': has_disc,
-        'disc_calibration' : float(disc_calibration),
-        'train_config_sig' : train_config_sig,
-        'train_config'     : train_config,
-        'calib_thresh'     : float(calib_thresh),
-        'train_ref_mu'     : float(train_ref_mu),
-        'train_ref_std'    : float(train_ref_std),
-        'model_type'       : model_type_label,
-        'n_channels'       : int(n_channels),
-        'channel_names'    : list(channel_names),
-        'sampling_rate'    : int(sampling_rate),
+        'disc_calibration'  : float(disc_calibration),
+        'train_config_sig'  : train_config_sig,
+        'train_config'      : train_config,
+        'calib_thresh'      : float(calib_thresh),
+        'train_ref_mu'      : float(train_ref_mu),
+        'train_ref_std'     : float(train_ref_std),
+        'model_type'        : model_type_label,
+        'n_channels'        : int(n_channels),
+        'channel_names'     : list(channel_names),
+        'sampling_rate'     : int(sampling_rate),
+        'base_model_version': base_model_version,
     }, path)
     logger.info(
         f'[personal_training] saved {suffix} → {path} '
         f'(thresh={calib_thresh:.3f}, n_ch={n_channels})'
     )
     return path
+
+
+def _find_matching_base_model(
+    mode         : str,
+    channel_names: list[str],
+) -> tuple[Path, dict] | None:
+    from config import BASE_MODELS_DIR
+
+    if not BASE_MODELS_DIR.is_dir():
+        return None
+
+    suffix = 'predictor' if mode == 'prediction' else 'detector'
+    candidates = sorted(BASE_MODELS_DIR.glob(f'base_{suffix}*.pt'))
+
+    for pt_file in candidates:
+        try:
+            ckpt = torch.load(str(pt_file), map_location='cpu', weights_only=False)
+        except Exception as e:
+            logger.warning(f'[personal_training] could not read {pt_file.name}: {e}')
+            continue
+
+        if not isinstance(ckpt, dict):
+            continue
+
+        base_channels = ckpt.get('channel_names')
+        if not isinstance(base_channels, list):
+            continue
+
+        if base_channels == channel_names:
+            return pt_file, ckpt
+
+    return None
 
 
 def _train_model(
@@ -201,16 +204,8 @@ def _train_model(
     TRAIN_CONFIG_SIG,
     TRAIN_CONFIG,
 ) -> tuple[str, dict]:
-    """Unified training pipeline that works with any channel count.
+    from services.headset_service import MIN_CH, MAX_CH
 
-    Steps:
-      1. Load patient CSV data via load_patient_training_data()
-      2. Verify the loaded channel_names matches the locked headset
-      3. Load CHB-MIT pretraining data adapted to the patient's channel layout
-      4. Split, normalize, pretrain (CLEP), finetune, calibrate threshold
-      5. Train WGAN discriminator
-      6. Save checkpoint with channel metadata
-    """
     patient_data_dir = Path(patient_data_dir)
     chb_mit_dir      = Path(chb_mit_dir)
     output_dir       = str(output_dir)
@@ -222,18 +217,16 @@ def _train_model(
         )
 
     n_ch = len(channel_names)
-    if n_ch < 9 or n_ch > 18:
+    if n_ch < MIN_CH or n_ch > MAX_CH:
         raise ValueError(
-            f'[personal_training] channel count {n_ch} outside allowed range 9..18'
+            f'[personal_training] channel count {n_ch} outside allowed range {MIN_CH}..{MAX_CH}'
         )
 
     pos_name = 'preictal' if mode == 'prediction' else 'ictal'
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    PRETRAIN_EPOCHS = 50
     FINETUNE_EPOCHS = 60
 
-    # ── 1. Load patient CSV data ────────────────────────────────────────────
     clips, labels, data_n_ch, data_channels, ref_mu, ref_std = \
         load_patient_training_data(patient_data_dir, patient_id, mode=mode)
 
@@ -243,11 +236,18 @@ def _train_model(
             f'{0 if clips is None else len(clips)} clips'
         )
 
-    # ── 2. Verify channels match the locked headset ─────────────────────────
-    if data_channels != channel_names:
+    if set(data_channels) != set(channel_names):
         raise ValueError(
             f'[personal_training] channel mismatch for {patient_id}: '
             f'data has {data_channels} but headset is locked to {channel_names}'
+        )
+
+    if data_channels != channel_names:
+        reorder_idx = [data_channels.index(ch) for ch in channel_names]
+        clips = clips[:, reorder_idx, :]
+        data_channels = channel_names
+        logger.info(
+            f'[personal_training] reordered {patient_id} data channels to match headset'
         )
 
     pos_clips    = clips[labels == 1]
@@ -263,20 +263,44 @@ def _train_model(
         f'{len(normal_clips)} normal, {n_ch}ch'
     )
 
-    # ── 3. Load CHB-MIT for pretraining (adapted to patient channels) ───────
-    source_dss = []
-    if chb_mit_dir.exists():
-        chb_data = load_chb_mit_for_patient_channels(
-            chb_mit_dir, channel_names, mode=mode,
-        )
-        for c, l in chb_data:
-            source_dss.append(EEGDataset(c, l))
-        logger.info(
-            f'[personal_training] {len(source_dss)} CHB-MIT source patients '
-            f'(adapted to {n_ch}ch)'
-        )
+    base_version = None
+    match = _find_matching_base_model(mode, channel_names)
 
-    # ── 4. Split train/val ──────────────────────────────────────────────────
+    if match is not None:
+        base_pt, ckpt = match
+        base_state = ckpt.get('state_dict', ckpt)
+        enc = build_model(E=n_ch).to(dev)
+        enc.load_state_dict(base_state)
+        base_version = ckpt.get('base_version', 'unknown')
+        logger.info(
+            f'[personal_training] using base model {base_pt.name} '
+            f'(version={base_version}, exact {n_ch}-channel match) — skipping Phase 1'
+        )
+    else:
+        logger.warning(
+            f'[personal_training] no base model matches this headset '
+            f'({n_ch}ch: {channel_names}) — '
+            f'falling back to full CHB-MIT pretraining (slow!). '
+            f'Run `python -m services.base_model_training` to create base models.'
+        )
+        PRETRAIN_EPOCHS = 50
+        enc = build_model(E=n_ch).to(dev)
+
+        source_dss = []
+        if chb_mit_dir.exists():
+            chb_data = load_chb_mit_for_patient_channels(
+                chb_mit_dir, channel_names, mode=mode,
+            )
+            for c, l in chb_data:
+                source_dss.append(EEGDataset(c, l))
+            logger.info(
+                f'[personal_training] {len(source_dss)} CHB-MIT source patients '
+                f'(adapted to {n_ch}ch)'
+            )
+
+        if source_dss:
+            enc = pretrain_clep(enc, source_dss, epochs=PRETRAIN_EPOCHS, dev=dev)
+
     np.random.shuffle(normal_clips)
     split_p = max(1, int(len(pos_clips) * 0.8))
     train_pos, val_pos = pos_clips[:split_p], pos_clips[split_p:]
@@ -304,12 +328,6 @@ def _train_model(
     train_ds = EEGDataset(train_clips, train_labels)
     val_ds   = EEGDataset(val_clips, val_labels)
 
-    # ── 5. Build + pretrain + finetune ──────────────────────────────────────
-    enc = build_model(E=n_ch).to(dev)
-
-    if source_dss:
-        enc = pretrain_clep(enc, source_dss, epochs=PRETRAIN_EPOCHS, dev=dev)
-
     hard_int_idxs = find_hard_interictal(enc, train_int, THRESHOLD_W, dev)
     if len(hard_int_idxs) > 10:
         extra_int = train_int[hard_int_idxs]
@@ -331,7 +349,6 @@ def _train_model(
 
     calib_thresh = calibrate_threshold(enc, val_ds, dev=dev)
 
-    # ── 6. WGAN discriminator ───────────────────────────────────────────────
     disc = SequenceWGANDiscriminator(DISC_FEATURE_DIM, WGAN_SEQ_LEN).to(dev)
     disc, disc_cal = train_discriminator_wgan(
         enc, disc, train_ds,
@@ -339,7 +356,6 @@ def _train_model(
         lambda_gp=LAMBDA_GP, dev=dev,
     )
 
-    # ── 7. Save with channel metadata ───────────────────────────────────────
     pt_path = _save_checkpoint(
         model            =enc,
         discriminator    =disc,
@@ -355,15 +371,17 @@ def _train_model(
         folder           =output_dir,
         n_channels       =n_ch,
         channel_names    =channel_names,
+        base_model_version=base_version,
     )
 
     meta = {
-        'tier'           : tier,
-        f'{pos_name}_clips': int(len(pos_clips)),
-        'normal_clips'   : int(len(normal_clips)),
-        'n_channels'     : n_ch,
-        'channel_names'  : channel_names,
-        'headset_name'   : headset_name,
-        'calib_thresh'   : float(calib_thresh),
+        'tier'              : tier,
+        f'{pos_name}_clips' : int(len(pos_clips)),
+        'normal_clips'      : int(len(normal_clips)),
+        'n_channels'        : n_ch,
+        'channel_names'     : channel_names,
+        'headset_name'      : headset_name,
+        'calib_thresh'      : float(calib_thresh),
+        'base_model_version': base_version,
     }
     return pt_path, meta

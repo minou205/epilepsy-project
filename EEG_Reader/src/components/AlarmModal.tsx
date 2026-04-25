@@ -9,7 +9,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlarmEvent, ModelTier } from '../types/tracker';
-import RatingWidget from './RatingWidget';
 
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
@@ -27,7 +26,6 @@ interface AlarmModalProps {
   alarm         : AlarmEvent | null;
   onDismiss     : () => void;
   onConfirm     : (alarmId: string, confirmed: boolean) => void;
-  onRate        : (alarmId: string, rating: number) => void;
   onFalseAlarm ?: (alarmId: string) => void;
 }
 
@@ -35,13 +33,11 @@ export default function AlarmModal({
   alarm,
   onDismiss,
   onConfirm,
-  onRate,
   onFalseAlarm,
 }: AlarmModalProps) {
   const insets  = useSafeAreaInsets();
   const visible = alarm !== null;
 
-  // Countdown timer
   const [remainingMs, setRemainingMs] = useState(0);
 
   useEffect(() => {
@@ -81,7 +77,6 @@ export default function AlarmModal({
       ]}>
         <View style={[styles.card, { borderColor: accentColor + '66' }]}>
 
-          {/* Header */}
           <View style={[styles.iconCircle, { backgroundColor: accentColor + '22' }]}>
             <Text style={[styles.icon, { color: accentColor }]}>{icon}</Text>
           </View>
@@ -89,7 +84,6 @@ export default function AlarmModal({
           <Text style={[styles.typeLabel, { color: accentColor }]}>{typeLabel}</Text>
           <Text style={styles.message}>{alarm.message}</Text>
 
-          {/* Active model version */}
           <View style={styles.tierRow}>
             <Text style={styles.tierLabel}>Active Model: </Text>
             <Text style={[styles.tierValue, { color: accentColor }]}>
@@ -97,12 +91,10 @@ export default function AlarmModal({
             </Text>
           </View>
 
-          {/* Countdown */}
           {!isConfirmed && (
             <Text style={styles.countdown}>{countdownText}</Text>
           )}
 
-          {/* Confirmation buttons */}
           {!isConfirmed && !alreadyMarked && (
             <View style={styles.confirmRow}>
               <TouchableOpacity
@@ -123,16 +115,6 @@ export default function AlarmModal({
             </View>
           )}
 
-          {/* Rating (only for personal models) */}
-          {isPersonal && !alreadyMarked && (
-            <RatingWidget
-              alarmId={alarm.id}
-              current={alarm.rating}
-              onRate={onRate}
-            />
-          )}
-
-          {/* False Alarm feedback button */}
           {isPersonal && !alreadyMarked && !isConfirmed && onFalseAlarm && (
             <TouchableOpacity
               style={styles.falseAlarmBtn}
@@ -143,7 +125,6 @@ export default function AlarmModal({
             </TouchableOpacity>
           )}
 
-          {/* Confirmation that false alarm was sent */}
           {alreadyMarked && (
             <View style={styles.markedRow}>
               <Text style={styles.markedText}>
@@ -152,7 +133,6 @@ export default function AlarmModal({
             </View>
           )}
 
-          {/* Dismiss */}
           <TouchableOpacity
             style={[styles.dismissBtn, { borderColor: accentColor + '55' }]}
             onPress={onDismiss}

@@ -48,7 +48,6 @@ export default function ChatScreen() {
 
   useEffect(() => {
     loadMessages();
-    // Poll every 3 seconds for new messages
     pollRef.current = setInterval(loadMessages, 3000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -85,7 +84,6 @@ export default function ChatScreen() {
     <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
       <ExpoStatusBar style="light" />
 
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={goBack} style={styles.backBtn}>
           <Text style={styles.backText}>{'<'}</Text>
@@ -120,7 +118,6 @@ export default function ChatScreen() {
           }
         />
 
-        {/* Input row */}
         <View style={styles.inputRow}>
           <TextInput
             style={styles.input}

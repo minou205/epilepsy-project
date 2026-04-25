@@ -34,9 +34,9 @@ class PlaybackEngine:
         self.handler           = handler
         self._position         : int       = 0
         self._paused           : bool      = True
-        self._pc_channels      : List[str] = []   # set by the PC GUI
-        self._phone_channels   : List[str] = []   # set by the phone SELECT command
-        self._active_channels  : List[str] = []   # intersection used for streaming
+        self._pc_channels      : List[str] = []
+        self._phone_channels   : List[str] = []
+        self._active_channels  : List[str] = []
         self.sequence_id       : int       = 0
 
     @property
@@ -58,10 +58,6 @@ class PlaybackEngine:
     def resume(self) -> None: self._paused = False
 
     def _compute_active(self) -> None:
-        """Active channels = intersection of PC and phone selections.
-        If only one side has made a selection, use that side's list.
-        If neither has selected anything, active is empty (next_chunk falls back to all).
-        """
         pc    = self._pc_channels
         phone = self._phone_channels
         if pc and phone:
@@ -75,20 +71,15 @@ class PlaybackEngine:
             self._active_channels = []
 
     def set_pc_channels(self, channels: List[str]) -> None:
-        """Called from the PC GUI when the user checks/unchecks channels."""
         self._pc_channels = [c for c in channels if c in self.handler.channel_names]
-        # Reset phone selection so the phone re-negotiates against the new PC set.
         self._phone_channels = []
         self._compute_active()
 
     def set_phone_channels(self, channels: List[str]) -> None:
-        """Called when the phone sends a SELECT command."""
-        # Phone can only request channels the PC has already selected.
         allowed = set(self._pc_channels) if self._pc_channels else set(self.handler.channel_names)
         self._phone_channels = [c for c in channels if c in allowed]
         self._compute_active()
 
-    # Keep old name as a thin alias so existing call-sites still work.
     def set_channels(self, channels: List[str]) -> None:
         self.set_phone_channels(channels)
 
@@ -96,7 +87,6 @@ class PlaybackEngine:
         if not self.handler.is_loaded or self._paused:
             return None
 
-        # Stream active channels; fall back to all if no selection has been made
         channels = self._active_channels if self._active_channels else self.handler.channel_names
         if not channels:
             return None
@@ -118,9 +108,6 @@ class PlaybackEngine:
         }
 
     def get_config_packet(self) -> Dict:
-        # Report only the PC-selected channels so the phone's channel list
-        # mirrors exactly what the user chose on the PC.
-        # If no PC selection has been made yet, report all available channels.
         channels = self._pc_channels if self._pc_channels else self.handler.channel_names
         return {
             "type"         : "config",
@@ -132,16 +119,12 @@ class PlaybackEngine:
 
 
 async def _handle_http_probe(connection, request):
-    """Return HTTP 200 for plain-HTTP requests (iOS/Android connectivity probes)
-    that hit the WebSocket port without a proper WS Upgrade header.
-    Returning a response here prevents websockets from logging InvalidUpgrade noise.
-    """
     if "websocket" not in request.headers.get("Upgrade", "").lower():
         from websockets.http11 import Response
         from websockets.datastructures import Headers
         body = b"EEG Simulator WS Server\n"
         return Response(200, "OK", Headers([("Content-Length", str(len(body)))]), body)
-    return None  # proceed with normal WebSocket handshake
+    return None
 
 
 class EEGWebSocketServer:

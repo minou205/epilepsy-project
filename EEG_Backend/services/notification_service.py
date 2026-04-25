@@ -1,12 +1,8 @@
-"""
-Push notifications to helpers via the Expo Push Notification API.
-"""
 import httpx
 from config import EXPO_PUSH_URL
 
 
 async def send_push_to_tokens(tokens: list[str], title: str, body: str) -> int:
-    """Send push notifications to a list of Expo push tokens. Returns sent count."""
     if not tokens:
         return 0
 

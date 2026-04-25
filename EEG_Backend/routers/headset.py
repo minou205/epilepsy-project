@@ -1,4 +1,3 @@
-"""Headset endpoints — query, rename, and reset the per-patient headset lock."""
 import shutil
 from typing import Optional
 
@@ -41,7 +40,6 @@ async def get(patient_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{patient_id}/reset")
 async def reset(patient_id: str, db: AsyncSession = Depends(get_db)):
-    """Wipe the headset lock AND all collected data — user confirmed headset change."""
     await reset_headset(db, patient_id)
     pdir = EEG_DATA_DIR / patient_id
     if pdir.exists():

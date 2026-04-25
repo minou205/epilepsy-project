@@ -8,11 +8,8 @@ export interface SessionConfig {
 export interface EEGPacket {
   sequenceId : number;
   time       : number;
-  /** Names of the N channels present in this packet — order matches `data`. */
   labels     : string[];
-  /** [N channels][chunkSize samples] — outer index matches `labels`. */
   data       : number[][];
-  /** Sampling rate reported by the server for this packet. */
   fs         : number;
 }
 
@@ -33,7 +30,6 @@ export class EEGWSManager {
   private _url         : string           = '';
   private _intentional : boolean          = false;
 
-  /** The host/IP extracted from the WebSocket URL after a successful connect. */
   public connectedHost : string | null    = null;
 
   private readonly onPacket       : OnPacketCb;
@@ -89,7 +85,6 @@ export class EEGWSManager {
     this.ws = new WebSocket(this._url);
 
     this.ws.onopen = () => {
-      // Extract host IP from ws://host:port
       try {
         const match = this._url.match(/^ws:\/\/([^:/]+)/);
         this.connectedHost = match ? match[1] : null;

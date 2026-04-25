@@ -1,12 +1,3 @@
-/**
- * REST client for the backend `/headset` endpoints.
- *
- * The backend locks each patient to ONE headset (a fixed list of channel
- * names). This client lets the app fetch the saved headset, rename it,
- * or reset it (which wipes the patient's collected data so they can
- * register a new headset).
- */
-
 export interface HeadsetInfo {
   patientId    : string;
   headsetName  : string;

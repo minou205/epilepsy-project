@@ -1,11 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { SeizureDataPackage, NormalDataPackage, FalsePositivePackage } from './DataCollector';
 
-/**
- * Thrown when an upload is rejected because its channel set does not match
- * the patient's locked headset. The TrackerScreen catches this and shows
- * the "did you change your headset?" modal.
- */
 export class HeadsetMismatchError extends Error {
   constructor(
     public readonly expected: string[],
@@ -17,55 +12,79 @@ export class HeadsetMismatchError extends Error {
   }
 }
 
-export interface RegisterPatientPayload {
-  patient_id  : string;
-  patient_name: string;
-  push_token  : string | null;
-}
-
-export interface AddHelperPayload {
-  helper_push_token: string;
+export class CooldownError extends Error {
+  constructor(
+    public readonly dataType      : string,
+    public readonly remainingSecs : number,
+    message?: string,
+  ) {
+    super(message ?? `Please wait before recording more ${dataType} data.`);
+    this.name = 'CooldownError';
+  }
 }
 
 export interface SeizureUploadResponse {
-  seizure_count    : number;
-  training_queued  : boolean;
-  max_reached      : boolean;
-  ask_satisfaction : boolean;
+  seizure_count           : number;
+  normal_count            : number;
+  training_queued         : boolean;
+  training_blocked_reason : string | null;
+  needs_normal            : boolean;
+  max_reached             : boolean;
+  ask_satisfaction        : boolean;
+  next_train_at           : number;
+}
+
+export interface TrainingJobDetail {
+  job_id      : string;
+  model_type  : 'predictor' | 'detector';
+  status      : 'pending' | 'running' | 'complete' | 'failed';
+  queued_at   : string | null;
+  started_at  : string | null;
+  completed_at: string | null;
+  error_msg   : string | null;
 }
 
 export interface TrainingStatus {
-  status      : 'idle' | 'queued' | 'running' | 'complete' | 'failed';
-  progressPct : number;
-  tier        : string;
+  overall_status     : 'idle' | 'pending' | 'training' | 'completed' | 'failed';
+  tier               : string;
+  version_num        : number;
+  pending_acceptance : boolean;
+  jobs               : TrainingJobDetail[];
+  error_msg          : string | null;
+}
+
+export interface AcceptResult {
+  accepted : number;
+  cleaned  : number;
+  tier     : string;
+}
+
+export interface DataCounts {
+  seizure_count       : number;
+  normal_count        : number;
+  false_positive_count: number;
+  needs_normal        : boolean;
+  balanced            : boolean;
+  next_train_at       : number;
+  active_tier         : string;
+  pending_acceptance  : boolean;
 }
 
 export class BackendClient {
   constructor(private readonly baseUrl: string) {}
 
-  // ── Patient ──────────────────────────────────────────────────────────────
-
-  async registerPatient(payload: RegisterPatientPayload): Promise<{ patient_id: string }> {
-    return this.post('/patients/register', payload);
-  }
-
-  async addHelper(patientId: string, helperToken: string): Promise<void> {
-    await this.post(`/patients/${encodeURIComponent(patientId)}/helpers`, {
-      helper_push_token: helperToken,
-    });
-  }
-
-  // ── Data upload ───────────────────────────────────────────────────────────
-
-  async uploadSeizureData(pkg: SeizureDataPackage): Promise<SeizureUploadResponse> {
+  async uploadSeizureData(
+    pkg: SeizureDataPackage,
+    trainNextVersion: boolean = true,
+  ): Promise<SeizureUploadResponse> {
     const form = new FormData();
-    form.append('patient_id',    pkg.patientId);
-    form.append('seizure_id',    pkg.seizureId);
-    form.append('captured_at',   pkg.capturedAt);
-    form.append('channel_names', JSON.stringify(pkg.channelNames));
-    form.append('sampling_rate', String(pkg.samplingRate));
+    form.append('patient_id',         pkg.patientId);
+    form.append('seizure_id',         pkg.seizureId);
+    form.append('captured_at',        pkg.capturedAt);
+    form.append('channel_names',      JSON.stringify(pkg.channelNames));
+    form.append('sampling_rate',      String(pkg.samplingRate));
+    form.append('train_next_version', String(trainNextVersion));
 
-    // React Native FormData: attach local files by URI — no Blob needed
     form.append('preictal_file', {
       uri : pkg.preictalFilePath,
       name: `preictal_${pkg.seizureId}.txt`,
@@ -117,31 +136,33 @@ export class BackendClient {
     return this.postForm('/data/false_positive', form);
   }
 
-  // ── Notifications ─────────────────────────────────────────────────────────
-
   async sendHelperAlarm(
     patientId: string,
     alarmType: 'prediction' | 'detection',
+    tier     : string,
   ): Promise<{ sent_count: number }> {
     return this.post('/notifications/alarm', {
       patient_id: patientId,
       alarm_type: alarmType,
+      tier,
     });
   }
-
-  // ── Training status ───────────────────────────────────────────────────────
 
   async getTrainingStatus(patientId: string): Promise<TrainingStatus> {
     return this.get(`/training/status?patient_id=${encodeURIComponent(patientId)}`);
   }
 
-  // ── Model management ──────────────────────────────────────────────────────
+  async getDataCounts(patientId: string): Promise<DataCounts> {
+    return this.get(`/data/counts/${encodeURIComponent(patientId)}`);
+  }
+
+  async acceptModels(patientId: string): Promise<AcceptResult> {
+    return this.post(`/training/accept/${encodeURIComponent(patientId)}`, {});
+  }
 
   async deleteModels(patientId: string): Promise<{ deleted: boolean }> {
     return this.post(`/models/delete`, { patient_id: patientId });
   }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
 
   private async get<T>(path: string): Promise<T> {
     const resp = await fetch(`${this.baseUrl}${path}`, {
@@ -175,7 +196,6 @@ export class BackendClient {
       body  : form,
     });
     if (!resp.ok) {
-      // Headset-mismatch (409) carries structured detail the UI must read.
       if (resp.status === 409) {
         try {
           const body = await resp.json();
@@ -189,7 +209,21 @@ export class BackendClient {
           }
         } catch (parseErr) {
           if (parseErr instanceof HeadsetMismatchError) throw parseErr;
-          // fall through to generic error below
+        }
+      }
+      if (resp.status === 429) {
+        try {
+          const body = await resp.json();
+          const detail = body?.detail ?? body;
+          if (detail?.error === 'cooldown') {
+            throw new CooldownError(
+              detail.data_type ?? 'data',
+              typeof detail.remaining_secs === 'number' ? detail.remaining_secs : 0,
+              detail.message,
+            );
+          }
+        } catch (parseErr) {
+          if (parseErr instanceof CooldownError) throw parseErr;
         }
       }
       throw new Error(`[BackendClient] POST (form) ${path} → ${resp.status}`);

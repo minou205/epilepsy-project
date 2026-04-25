@@ -54,9 +54,24 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
   const canCollect  = (profile?.consent_to_train ?? true) && profile?.role === 'patient';
   const role        = profile?.role ?? 'patient';
   const isTracking  = tracker.status === 'running' || tracker.status === 'alarm_predict' || tracker.status === 'alarm_detect';
-  const canStart    = isConnected && !isTracking && tracker.status !== 'collecting_normal';
 
-  // Keep screen awake while tracking to prevent the OS from killing the process
+  const hasLiveSignal = (() => {
+    if (!isConnected || session.displayData.length === 0) return false;
+    const TAIL = 32;
+    for (const ch of session.displayData) {
+      const s   = ch.data;
+      const len = s.length;
+      if (len === 0) continue;
+      const start = Math.max(0, len - TAIL);
+      for (let i = start; i < len; i++) {
+        if (s[i] !== 0) return true;
+      }
+    }
+    return false;
+  })();
+
+  const canStart    = isConnected && hasLiveSignal && !isTracking && tracker.status !== 'collecting_normal';
+
   useEffect(() => {
     if (isTracking) {
       activateKeepAwakeAsync('tracker').catch(() => {});
@@ -66,7 +81,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
     return () => { deactivateKeepAwake('tracker'); };
   }, [isTracking]);
 
-  // ── Banner colour ──
   let bannerColor = '#334455';
   let bannerBg    = '#0A1020';
   let bannerText  = tracker.statusMessage;
@@ -74,6 +88,9 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
   if (tracker.status === 'signal_lost') {
     bannerColor = '#FF4444'; bannerBg = '#1A0808';
     bannerText = 'Signal lost - please check your headset';
+  } else if (isConnected && !isTracking && !hasLiveSignal) {
+    bannerColor = '#FF6644'; bannerBg = '#1A0E08';
+    bannerText = 'Headset is off - turn it on to start tracking';
   } else if (tracker.status === 'alarm_predict') {
     bannerColor = '#FFCC00'; bannerBg = '#1A1400';
   } else if (tracker.status === 'alarm_detect') {
@@ -88,7 +105,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
     bannerColor = '#FFCC00'; bannerBg = '#1A1400';
   }
 
-  // Buffer readiness
   const SEIZURE_NEEDED_SECS = 21 * 60;
   const bufMins  = Math.floor(session.longBufferReadySecs / 60);
   const bufSecs  = session.longBufferReadySecs % 60;
@@ -97,10 +113,9 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
     ? `Buffer ready - ${bufMins}m of rolling data`
     : `Buffer: ${bufMins}m ${bufSecs}s / 21m 0s (filling...)`;
 
-  // Satisfaction handler
   const handleSatisfied = async () => {
     tracker.onSatisfactionAnswer(true);
-    await updateProfile({ consent_to_train: false });
+    await updateProfile({ train_next_version: false });
   };
   const handleNotSatisfied = () => {
     tracker.onSatisfactionAnswer(false);
@@ -110,7 +125,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
     <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
       <ExpoStatusBar style="light" />
 
-      {/* ── Top bar ── */}
       <View style={styles.topBar}>
         <View style={styles.topLeft}>
           <View style={[
@@ -138,25 +152,42 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
         </View>
       </View>
 
-      {/* ── Status banner ── */}
       <View style={[styles.banner, { backgroundColor: bannerBg }]}>
         <Text style={[styles.bannerText, { color: bannerColor }]} numberOfLines={2}>
           {bannerText}
         </Text>
       </View>
 
-      {/* ── Main content area ── */}
+      {tracker.pendingAcceptance && (
+        <View style={styles.acceptBanner}>
+          <View style={styles.acceptTextBlock}>
+            <Text style={styles.acceptTitle}>
+              New {tracker.pendingTier?.toUpperCase() ?? ''} model ready
+            </Text>
+            <Text style={styles.acceptSubText}>
+              Training complete — accept to activate your personal model
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.acceptBtn}
+            onPress={tracker.acceptNewModel}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.acceptBtnText}>Accept</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <ScrollView
         style={styles.mainScroll}
         contentContainerStyle={styles.mainContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Probability charts when models active */}
         {showCharts && tracker.predictorHistory.length > 0 && (
           <ProbabilityChart
             title="Prediction"
             data={tracker.predictorHistory}
-            threshold={0.5}
+            threshold={tracker.predictorThreshold}
             color="#FFCC00"
           />
         )}
@@ -164,12 +195,11 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
           <ProbabilityChart
             title="Detection"
             data={tracker.detectorHistory}
-            threshold={0.5}
+            threshold={tracker.detectorThreshold}
             color="#FF4444"
           />
         )}
 
-        {/* EEG waveform chart when no models */}
         {!showCharts && session.graphEnabled && (
           <MultiChannelChart
             channels={session.displayData}
@@ -178,7 +208,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
           />
         )}
 
-        {/* High-performance mode message */}
         {!showCharts && !session.graphEnabled && (
           <View style={styles.hpmContainer}>
             <Text style={styles.hpmTitle}>High-Performance Mode Active</Text>
@@ -193,14 +222,12 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
         )}
       </ScrollView>
 
-      {/* ── Buffer indicator ── */}
       <View style={styles.bufRow}>
         <Text style={[styles.bufText, bufReady && { color: '#00FF88' }]}>
           {bufLabel}
         </Text>
       </View>
 
-      {/* ── START / STOP button ── */}
       <View style={styles.startStopRow}>
         {isTracking ? (
           <TouchableOpacity
@@ -224,7 +251,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
         )}
       </View>
 
-      {/* ── Action buttons ── */}
       {canCollect && isTracking && (
         <View style={styles.actionRow}>
           <TouchableOpacity
@@ -251,19 +277,15 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
         </View>
       )}
 
-      {/* ── Bottom tab bar ── */}
       <BottomTabBar activeTab="tracker" role={role} isTracking={isTracking} />
 
-      {/* ── Alarm modal ── */}
       <AlarmModal
         alarm={tracker.activeAlarm}
         onDismiss={tracker.dismissAlarm}
         onConfirm={tracker.confirmAlarm}
-        onRate={tracker.rateAlarm}
         onFalseAlarm={tracker.markFalseAlarm}
       />
 
-      {/* ── Satisfaction modal ── */}
       <SatisfactionModal
         visible={tracker.showSatisfaction}
         seizureCount={tracker.satisfactionCount}
@@ -271,7 +293,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
         onNotSatisfied={handleNotSatisfied}
       />
 
-      {/* ── Headset Mismatch modal ── */}
       <Modal
         visible={tracker.headsetMismatch !== null}
         transparent
@@ -323,7 +344,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
         </View>
       </Modal>
 
-      {/* ── Graph Settings modal ── */}
       <Modal
         visible={showGraphSettings}
         transparent
@@ -409,8 +429,6 @@ export default function TrackerScreen({ session, tracker }: TrackerScreenProps) 
   );
 }
 
-// ── Styles ──────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#090915' },
   topBar: {
@@ -486,6 +504,25 @@ const styles = StyleSheet.create({
   },
   normalBtnText: { color: '#4499FF', fontSize: 15, fontWeight: '700', letterSpacing: 0.5 },
   btnDisabled: { opacity: 0.35 },
+  acceptBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: '#0A1828', borderBottomWidth: 1, borderBottomColor: '#1A3060',
+  },
+  acceptTextBlock: { flex: 1, marginRight: 12 },
+  acceptTitle: {
+    color: '#4499FF', fontSize: 13, fontWeight: '700', fontFamily: MONO,
+  },
+  acceptSubText: {
+    color: '#556677', fontSize: 11, fontFamily: MONO, marginTop: 2,
+  },
+  acceptBtn: {
+    paddingVertical: 8, paddingHorizontal: 18, borderRadius: 8,
+    backgroundColor: '#1A3060', borderWidth: 1, borderColor: '#4499FF55',
+  },
+  acceptBtnText: {
+    color: '#4499FF', fontSize: 13, fontWeight: '700', fontFamily: MONO,
+  },
 });
 
 const gs = StyleSheet.create({

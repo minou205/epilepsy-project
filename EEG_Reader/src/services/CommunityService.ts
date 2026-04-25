@@ -3,15 +3,12 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import { supabase, UserProfile } from './supabaseClient';
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 export interface Post {
   id         : string;
   author_id  : string;
   content    : string;
   image_url  : string | null;
   created_at : string;
-  // Joined fields
   author     : Pick<UserProfile, 'id' | 'full_name' | 'username' | 'avatar_url' | 'role'> | null;
   like_count : number;
   comment_count: number;
@@ -42,8 +39,6 @@ export interface Message {
   content         : string;
   created_at      : string;
 }
-
-// ── Posts ─────────────────────────────────────────────────────────────────────
 
 export async function fetchPosts(limit = 30, offset = 0): Promise<Post[]> {
   const userId = (await supabase.auth.getUser()).data.user?.id;
@@ -78,7 +73,6 @@ export async function createPost(content: string, imageUrl?: string): Promise<vo
   const userId = (await supabase.auth.getUser()).data.user?.id;
   if (!userId) throw new Error('Not authenticated');
 
-  // Ensure profile row exists (may be missing if signup happened before migration)
   const { data: profileExists } = await supabase
     .from('profiles')
     .select('id')
@@ -86,7 +80,6 @@ export async function createPost(content: string, imageUrl?: string): Promise<vo
     .maybeSingle();
 
   if (!profileExists) {
-    // Create a minimal profile row so the FK constraint passes
     const user = (await supabase.auth.getUser()).data.user;
     await supabase.from('profiles').insert({
       id: userId,
@@ -130,7 +123,6 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   const userId = (await supabase.auth.getUser()).data.user?.id;
   if (!userId) throw new Error('Not authenticated');
 
-  // Delete all messages in the conversation, then members, then conversation
   await supabase.from('messages').delete().eq('conversation_id', conversationId);
   await supabase.from('conversation_members').delete().eq('conversation_id', conversationId);
   const { error } = await supabase.from('conversations').delete().eq('id', conversationId);
@@ -141,7 +133,6 @@ export async function toggleLike(postId: string): Promise<boolean> {
   const userId = (await supabase.auth.getUser()).data.user?.id;
   if (!userId) throw new Error('Not authenticated');
 
-  // Check if already liked
   const { data: existing } = await supabase
     .from('likes')
     .select('id')
@@ -151,10 +142,10 @@ export async function toggleLike(postId: string): Promise<boolean> {
 
   if (existing) {
     await supabase.from('likes').delete().eq('id', existing.id);
-    return false; // unliked
+    return false;
   } else {
     await supabase.from('likes').insert({ post_id: postId, user_id: userId });
-    return true; // liked
+    return true;
   }
 }
 
@@ -187,13 +178,10 @@ export async function addComment(postId: string, content: string): Promise<void>
   if (error) throw error;
 }
 
-// ── Chat ─────────────────────────────────────────────────────────────────────
-
 export async function getOrCreateConversation(otherUserId: string): Promise<string> {
   const userId = (await supabase.auth.getUser()).data.user?.id;
   if (!userId) throw new Error('Not authenticated');
 
-  // Find existing conversation between us
   const { data: myConvos } = await supabase
     .from('conversation_members')
     .select('conversation_id')
@@ -209,8 +197,6 @@ export async function getOrCreateConversation(otherUserId: string): Promise<stri
 
   if (sharedId) return sharedId.conversation_id;
 
-  // Create new conversation — generate ID client-side to avoid
-  // needing a SELECT (which would fail RLS before members are added)
   const convId = Crypto.randomUUID();
 
   const { error } = await supabase
@@ -251,13 +237,10 @@ export async function sendMessage(conversationId: string, content: string): Prom
   if (error) throw error;
 }
 
-// ── Conversations list ──────────────────────────────────────────────────────
-
 export async function fetchConversations(): Promise<Conversation[]> {
   const userId = (await supabase.auth.getUser()).data.user?.id;
   if (!userId) throw new Error('Not authenticated');
 
-  // Get all conversation IDs for this user
   const { data: memberships, error: mErr } = await supabase
     .from('conversation_members')
     .select('conversation_id')
@@ -268,11 +251,9 @@ export async function fetchConversations(): Promise<Conversation[]> {
 
   const convIds = memberships.map(m => m.conversation_id);
 
-  // For each conversation, find the other member and the last message
   const conversations: Conversation[] = [];
 
   for (const convId of convIds) {
-    // Get other member
     const { data: members } = await supabase
       .from('conversation_members')
       .select('user_id')
@@ -291,7 +272,6 @@ export async function fetchConversations(): Promise<Conversation[]> {
       otherUser = prof as any;
     }
 
-    // Get last message
     const { data: msgs } = await supabase
       .from('messages')
       .select('content, created_at')
@@ -308,7 +288,6 @@ export async function fetchConversations(): Promise<Conversation[]> {
     });
   }
 
-  // Sort by last message time
   conversations.sort((a, b) => {
     if (!a.last_at && !b.last_at) return 0;
     if (!a.last_at) return 1;
@@ -318,8 +297,6 @@ export async function fetchConversations(): Promise<Conversation[]> {
 
   return conversations;
 }
-
-// ── Helper-patient associations ─────────────────────────────────────────────
 
 export async function fetchHelperPatients(helperId: string): Promise<Pick<UserProfile, 'id' | 'full_name' | 'username' | 'avatar_url' | 'role'>[]> {
   const { data, error } = await supabase
@@ -331,14 +308,11 @@ export async function fetchHelperPatients(helperId: string): Promise<Pick<UserPr
   return (data ?? []).map((row: any) => row.profiles).filter(Boolean);
 }
 
-// ── Image upload ────────────────────────────────────────────────────────────
-
 export async function uploadImageToStorage(
   uri: string,
   bucket: string,
   path: string,
 ): Promise<string> {
-  // Read file as base64 (works reliably in React Native unlike fetch→blob)
   const base64 = await FileSystem.readAsStringAsync(uri, {
     encoding: FileSystem.EncodingType.Base64,
   });
@@ -352,8 +326,6 @@ export async function uploadImageToStorage(
   const { data } = supabase.storage.from(bucket).getPublicUrl(path);
   return data.publicUrl;
 }
-
-// ── Profile lookup ───────────────────────────────────────────────────────────
 
 export async function fetchUserProfile(userId: string): Promise<UserProfile | null> {
   const { data, error } = await supabase

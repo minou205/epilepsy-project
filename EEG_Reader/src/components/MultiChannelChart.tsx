@@ -26,7 +26,6 @@ const CLR = {
 interface MultiChannelChartProps {
   channels     : ChannelDisplay[];
   isConnected  : boolean;
-  /** When false the component renders nothing, saving 100% GPU resources. */
   graphEnabled ?: boolean;
 }
 
@@ -59,7 +58,6 @@ function buildLanePath(
 const MultiChannelChart: React.FC<MultiChannelChartProps> = React.memo(
   ({ channels, isConnected, graphEnabled = true }) => {
 
-    // Return null immediately — React skips reconciliation entirely, saving GPU.
     if (!graphEnabled) return null;
 
     const screenWidth = Dimensions.get('window').width;

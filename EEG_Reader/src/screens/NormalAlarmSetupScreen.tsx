@@ -53,9 +53,7 @@ export default function NormalAlarmSetupScreen() {
           You can change this later in Settings.
         </Text>
 
-        {/* Time picker */}
         <View style={styles.timeRow}>
-          {/* Hour */}
           <View style={styles.pickerCol}>
             <TouchableOpacity
               style={styles.arrowBtn}
@@ -77,7 +75,6 @@ export default function NormalAlarmSetupScreen() {
 
           <Text style={styles.colonText}>:</Text>
 
-          {/* Minute */}
           <View style={styles.pickerCol}>
             <TouchableOpacity
               style={styles.arrowBtn}

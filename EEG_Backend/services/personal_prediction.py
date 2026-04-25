@@ -42,7 +42,7 @@ CH18 = [
 
 L = int(math.floor(math.log2(FS))) - 3
 
-DELTA0_S      = 30    # 15
+DELTA0_S      = 30
 DISC_GATE_S   = 30
 DISC_INT_THRESH = 0.2
 SKIP_START_S  = 120
@@ -309,7 +309,7 @@ class TemporalPyramid(nn.Module):
                           padding=k_ // 2, bias=False),
                 nn.BatchNorm1d(out_ch), nn.ELU())
             for k_, s_ in zip(ks, st)])
-    
+
     def forward(self, x):
         out = []
         T = x.shape[-1]
@@ -492,7 +492,7 @@ del _m, _x
 
 
 class SequenceWGANDiscriminator(nn.Module):
-    
+
     def __init__(self, feature_dim=DISC_FEATURE_DIM, seq_len=WGAN_SEQ_LEN, hidden=128):
         super().__init__()
         self.seq_len = seq_len
@@ -645,7 +645,7 @@ print('ECLoss (hard-neg mining) + CLEPLoss + FocalLoss + metrics ready')
 
 def pretrain_clep(encoder, source_datasets, epochs=50, batch_size=64,
                   lr=1e-3, dev=None, weight_decay=1e-4):
-    
+
     if dev is None:
         dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     encoder = encoder.to(dev)
@@ -856,7 +856,7 @@ def _make_sequences(clips, seq_len=WGAN_SEQ_LEN):
 def train_discriminator_wgan(encoder, discriminator, train_dataset,
                               epochs=60, batch_size=32, lr=4e-5,
                               lambda_gp=10.0, dev=None, patience=15):
-    
+
     if dev is None:
         dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -876,18 +876,18 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
     pre_seqs = _make_sequences(pre_clips)
     int_seqs = _make_sequences(int_clips)
     n = min(len(pre_seqs), len(int_seqs))
-    
+
     pre_seqs = pre_seqs[np.random.choice(len(pre_seqs), n, replace=False)]
     int_seqs = int_seqs[np.random.choice(len(int_seqs), n, replace=False)]
 
     pre_t = torch.as_tensor(pre_seqs, dtype=torch.float32)
     int_t = torch.as_tensor(int_seqs, dtype=torch.float32)
-    
+
     pre_ld = DataLoader(TensorDataset(pre_t), batch_size=batch_size, shuffle=True, drop_last=True)
     int_ld = DataLoader(TensorDataset(int_t), batch_size=batch_size, shuffle=True, drop_last=True)
 
     optimizer = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
-    
+
     best_w_dist = -float('inf')
     best_disc_state = None
     no_improve = 0
@@ -900,20 +900,20 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
         for (pb,), (ib,) in zip(pre_ld, int_ld):
             pb, ib = pb.to(dev), ib.to(dev)
             optimizer.zero_grad()
-            
+
             with torch.no_grad():
                 B, S, C, T = pb.shape
                 pre_feats = encoder.encode(pb.reshape(B * S, C, T)).reshape(B, S, -1)
                 int_feats = encoder.encode(ib.reshape(B * S, C, T)).reshape(B, S, -1)
-            
+
             d_pre = discriminator(pre_feats)
             d_int = discriminator(int_feats)
             gp = compute_gradient_penalty(discriminator, pre_feats, int_feats, dev)
-            
+
             loss = d_pre.mean() - d_int.mean() + lambda_gp * gp
             loss.backward()
             optimizer.step()
-            
+
             d_pre_last = d_pre.mean().item()
             d_int_last = d_int.mean().item()
             gp_last = gp.item()
@@ -936,7 +936,7 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
 
     discriminator.eval()
     pre_scores_list, int_scores_list = [], []
-    
+
     eval_pre_ld = DataLoader(TensorDataset(pre_t), batch_size=batch_size, shuffle=False)
     eval_int_ld = DataLoader(TensorDataset(int_t), batch_size=batch_size, shuffle=False)
 
@@ -945,7 +945,7 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
             B, S, C, T = pb.shape
             feats = encoder.encode(pb.to(dev).reshape(B * S, C, T)).reshape(B, S, -1)
             pre_scores_list.append(discriminator(feats).cpu().numpy())
-            
+
         for (ib,) in eval_int_ld:
             B, S, C, T = ib.shape
             feats = encoder.encode(ib.to(dev).reshape(B * S, C, T)).reshape(B, S, -1)
@@ -956,9 +956,9 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
 
     disc_calibration = float((pre_scores.mean() + int_scores.mean()) / 2.0)
     sep = int_scores.mean() - pre_scores.mean()
-    
+
     print(f'[WGAN-GP] Done | separation={sep:.2f} | offset={disc_calibration:.3f}')
-    
+
     for p in encoder.parameters():
         p.requires_grad = True
 
@@ -967,11 +967,11 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
 def find_hard_interictal(encoder, interictal_clips, threshold, dev, batch_size=64):
     encoder.eval()
     hard_idxs = []
-    
+
     data_tensor = torch.as_tensor(interictal_clips, dtype=torch.float32)
     ds     = TensorDataset(data_tensor)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
-    
+
     offset = 0
     with torch.no_grad():
         for (batch,) in loader:
@@ -979,7 +979,7 @@ def find_hard_interictal(encoder, interictal_clips, threshold, dev, batch_size=6
             hard  = np.where(probs >= threshold * 0.8)[0] + offset
             hard_idxs.extend(hard.tolist())
             offset += len(batch)
-            
+
     return np.array(hard_idxs)
 
 def save_patient_brain(model, discriminator, patient_id, disc_calibration=0.0,
@@ -987,9 +987,9 @@ def save_patient_brain(model, discriminator, patient_id, disc_calibration=0.0,
                         folder='patient_predictor'):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f'{patient_id}_predictor.pt')
-    
+
     has_disc = discriminator is not None
-    
+
     torch.save({
         'state_dict'       : model.state_dict(),
         'disc_state_dict'  : discriminator.state_dict() if has_disc else None,
@@ -1002,29 +1002,12 @@ def save_patient_brain(model, discriminator, patient_id, disc_calibration=0.0,
         'train_ref_std'    : float(train_ref_std),
         'model_type'       : 'hybrid_sts_stan_v2',
     }, path)
-    
+
     print(f'Model saved → {path} (thresh={calib_thresh:.3f}, has_disc={has_disc})')
     return path
 
 
-# ── Public training API (called by training_service.py) ──────────────────────
-
 def train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
-    """
-    Train a personal seizure prediction model for one patient.
-
-    Parameters
-    ----------
-    patient_id       : str   – Supabase user UUID
-    patient_data_dir : str|Path – directory with preictal_*.csv, normal_*.csv, etc.
-    chb_mit_dir      : str|Path – CHB-MIT dataset root (for source-patient pretraining)
-    output_dir       : str|Path – where to save the .pt file
-    tier             : str   – version label, e.g. 'v1'
-
-    Returns
-    -------
-    (pt_path, meta_dict)
-    """
     import glob
     patient_data_dir = Path(patient_data_dir)
     chb_mit_dir      = Path(chb_mit_dir)
@@ -1034,27 +1017,22 @@ def train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier)
     PRETRAIN_EPOCHS = 50
     FINETUNE_EPOCHS = 60
 
-    # ── 1. Load patient data from uploaded CSVs ──────────────────────────────
     preictal_files = sorted(glob.glob(str(patient_data_dir / "preictal_*.csv")))
     ictal_files    = sorted(glob.glob(str(patient_data_dir / "ictal_*.csv")))
     normal_files   = sorted(glob.glob(str(patient_data_dir / "normal_*.csv")))
     fp_files       = sorted(glob.glob(str(patient_data_dir / "false_positives" / "false_positive_*.csv")))
 
     def load_csv_clips(file_list):
-        """Load EEG clips from CSV files. Each file → [N_clips, N_CH, CLEN] array."""
         all_clips = []
         for fp in file_list:
             try:
-                data = np.loadtxt(fp, delimiter=',', skiprows=1)  # skip header
-                # data shape: [samples, channels] → reshape to clips
+                data = np.loadtxt(fp, delimiter=',', skiprows=1)
                 n_samples = data.shape[0]
                 n_clips = n_samples // CLEN
                 if n_clips == 0:
                     continue
                 trimmed = data[:n_clips * CLEN]
-                # Reshape: [n_clips, CLEN, channels] → [n_clips, channels, CLEN]
                 clips = trimmed.reshape(n_clips, CLEN, -1).transpose(0, 2, 1)
-                # Ensure 18 channels (pad or trim)
                 if clips.shape[1] < N_CH:
                     pad = np.zeros((clips.shape[0], N_CH - clips.shape[1], CLEN))
                     clips = np.concatenate([clips, pad], axis=1)
@@ -1077,7 +1055,6 @@ def train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier)
 
     print(f'[train_predictor] {patient_id}: {len(pre_clips)} preictal, {len(normal_clips)} normal clips')
 
-    # ── 2. Load CHB-MIT source patients for pretraining ──────────────────────
     source_dss = []
     if chb_mit_dir.exists():
         for d in sorted(chb_mit_dir.glob('chb*')):
@@ -1091,7 +1068,6 @@ def train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier)
                 continue
         print(f'[train_predictor] {len(source_dss)} source patients for pretraining')
 
-    # ── 3. Split train/val ───────────────────────────────────────────────────
     np.random.shuffle(normal_clips)
     split = max(1, int(len(pre_clips) * 0.8))
     train_pre, val_pre = pre_clips[:split], pre_clips[split:]
@@ -1119,7 +1095,6 @@ def train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier)
     train_ds = EEGDataset(train_clips, train_labels)
     val_ds   = EEGDataset(val_clips, val_labels)
 
-    # ── 4. Build + pretrain + finetune ───────────────────────────────────────
     enc = build_model(E=N_CH).to(dev)
 
     if source_dss:
@@ -1138,14 +1113,12 @@ def train_predictor(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier)
 
     calib_thresh = calibrate_threshold(enc, val_ds, dev=dev)
 
-    # ── 5. WGAN discriminator ────────────────────────────────────────────────
     disc = SequenceWGANDiscriminator(DISC_FEATURE_DIM, WGAN_SEQ_LEN).to(dev)
     disc, disc_cal = train_discriminator_wgan(
         enc, disc, train_ds,
         epochs=WGAN_EPOCHS, batch_size=32, lr=WGAN_LR, lambda_gp=LAMBDA_GP, dev=dev,
     )
 
-    # ── 6. Save ──────────────────────────────────────────────────────────────
     pt_path = save_patient_brain(
         enc, disc, patient_id,
         disc_calibration=disc_cal,
@@ -1269,7 +1242,6 @@ if __name__ == '__main__':
       if not os.path.exists(brain_path):
           raise FileNotFoundError(f'No model found for {patient_id}.')
 
-      # 1. Load Model and Calibration Stats
       _ckpt = torch.load(brain_path, map_location=dev, weights_only=False)
       alarm_thresh     = float(_ckpt['calib_thresh'])
       train_ref_mu     = float(_ckpt['train_ref_mu'])
@@ -1280,20 +1252,17 @@ if __name__ == '__main__':
       model.load_state_dict(_ckpt['state_dict'])
       model.eval()
 
-      # Load Discriminator as a safety valve (Sequence-based)
       discriminator = None
       if _ckpt.get('disc_state_dict') is not None:
           discriminator = SequenceWGANDiscriminator(DISC_FEATURE_DIM, WGAN_SEQ_LEN).to(dev)
           discriminator.load_state_dict(_ckpt['disc_state_dict'])
           discriminator.eval()
 
-      # 2. Data Preparation and Global Normalization
       raw_data = load_edf_raw(edf_file_path)
       filtered_data = apply_clep_filter(raw_data, sfreq=FS)
       norm_data = (filtered_data - train_ref_mu) / (train_ref_std + 1e-8)
       T_total = norm_data.shape[1]
 
-      # 3. Inference Loop with Active Suppression (Multiplicative Fusion)
       fused_probs = []
       emb_buffer  = deque(maxlen=WGAN_SEQ_LEN)
 
@@ -1302,43 +1271,35 @@ if __name__ == '__main__':
               window = norm_data[:, start:start + CLEN]
               win_t  = torch.from_numpy(window).float().unsqueeze(0).to(dev)
 
-              # Extract Classifier features
               feats = model.encode(win_t)
               p_pre = F.softmax(model.fc(feats), dim=1)[0, 1].item()
 
-              # Apply Discriminator Suppression (to kill false positives)
               suppression = 1.0
               if discriminator is not None:
                   emb_buffer.append(feats.squeeze(0).cpu())
                   if len(emb_buffer) == WGAN_SEQ_LEN:
                       seq = torch.stack(list(emb_buffer)).unsqueeze(0).to(dev)
                       raw_d = discriminator(seq).item()
-                      # Probability that the state is "Normal" (Interictal)
                       disc_int_p = float(torch.sigmoid(torch.tensor(raw_d - disc_calibration)).item())
-                      # Suppression factor: the more certain the disc is of 'normal', the lower the probability
                       suppression = (1.0 - disc_int_p)
 
-              # Final fused probability: collapses if the discriminator objects
               fused_probs.append(p_pre * suppression)
 
       fused_probs = np.array(fused_probs)
       smoothed = np.convolve(fused_probs, np.ones(MA_S) / MA_S, mode='same')
 
-      # 4. Search for the "First Alarm" only
       first_alarm_sec = None
       consec = 0
 
       for idx, p_val in enumerate(smoothed):
-          # NO SKIP_START_S: Analysis starts from second 0
           if p_val >= alarm_thresh:
               consec += 1
               if consec >= DELTA0_S:
                   first_alarm_sec = idx - DELTA0_S + 1
-                  break # Exit loop immediately after the first hit
+                  break
           else:
               consec = 0
 
-      # 5. Final Report and Rendering
       print('\n' + '=' * 60)
       if first_alarm_sec is not None:
           a_min = first_alarm_sec / 60

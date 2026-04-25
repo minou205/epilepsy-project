@@ -23,7 +23,6 @@ import ChatScreen             from './src/screens/ChatScreen';
 import NormalAlarmSetupScreen from './src/screens/NormalAlarmSetupScreen';
 import QRScannerScreen        from './src/components/QRScannerScreen';
 
-// ── Router ────────────────────────────────────────────────────────────────────
 
 function AppNavigator() {
   const { user, profile, isLoading, updateProfile }  = useAuth();
@@ -48,7 +47,6 @@ function AppNavigator() {
     serverIpToConnect ?? null,
   );
 
-  // ── Tracker session — lives here so it survives screen navigation ─────────
   const effectiveSettings = user
     ? {
         ...settings,
@@ -61,9 +59,6 @@ function AppNavigator() {
 
   const tracker = useTrackerSession(eegSession, effectiveSettings);
 
-  // ── 0. Auto-derive backend URL from the EEG simulator connection ──────────
-  // The simulator and backend run on the same PC, so the IP is identical.
-  // This is more reliable than Expo's hostUri when the PC has multiple NICs.
   useEffect(() => {
     const host = eegSession.connectedHost;
     if (!host) return;
@@ -74,7 +69,6 @@ function AppNavigator() {
     }
   }, [eegSession.connectedHost]);
 
-  // ── 1. Sync Supabase profile -> appSettings ────────────────────────────────
   useEffect(() => {
     if (!user || !profile) return;
     updateSettings({
@@ -94,12 +88,10 @@ function AppNavigator() {
       profile?.data_usage_consent, profile?.role, profile?.consent_to_train,
       profile?.general_model_config, profile?.alarm_sound_enabled]);
 
-  // ── 2. Auth -> navigation gate ─────────────────────────────────────────────
   useEffect(() => {
     if (isLoading) return;
     if (!user && screen !== 'login') navigate('login');
     if (user && screen === 'login') {
-      // If patient and no alarm time set yet, go to alarm setup first
       if (profile?.role === 'patient' && !profile?.normal_alarm_time) {
         navigate('normalAlarmSetup');
       } else {
@@ -108,19 +100,13 @@ function AppNavigator() {
     }
   }, [user, isLoading, screen, navigate, profile?.role, profile?.normal_alarm_time]);
 
-  // ── 3. EEG connection -> navigation ────────────────────────────────────────
   const eegStatus   = eegSession.status;
   const isConnected = eegStatus === 'connected' || eegStatus === 'connecting';
 
   useEffect(() => {
     if (!user) return;
-    // After EEG connects from connect screen, go to tracker
     if (isConnected && screen === 'connect') navigate('tracker');
-    // Don't auto-navigate away from tracker on disconnect —
-    // the tracker shows connection status and the user can reconnect
   }, [isConnected, eegStatus, screen, user, navigate]);
-
-  // ── Callbacks ─────────────────────────────────────────────────────────────
 
   const handleQRScanned = useCallback((url: string) => {
     markManualConnect();
@@ -131,12 +117,10 @@ function AppNavigator() {
         updateSettings({ serverBaseUrl: backendUrl });
         updateProfile?.({ server_ip: ip });
       }
-    } catch { /* ignore */ }
+    } catch {}
     navigate('tracker');
     eegSession.connect(url);
   }, [eegSession, navigate, updateSettings, updateProfile, markManualConnect]);
-
-  // ── Loading splash ─────────────────────────────────────────────────────────
 
   if (isLoading) {
     return (
@@ -146,8 +130,6 @@ function AppNavigator() {
       </View>
     );
   }
-
-  // ── Screen routing ─────────────────────────────────────────────────────────
 
   switch (screen) {
     case 'login':
@@ -198,7 +180,6 @@ function AppNavigator() {
   }
 }
 
-// ── Loading splash styles ─────────────────────────────────────────────────────
 
 const splash = StyleSheet.create({
   root: {
@@ -215,11 +196,10 @@ const splash = StyleSheet.create({
   },
 });
 
-// ── Root ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   useEffect(() => {
-    setupNotifications().catch(() => {/* expo-notifications not installed in dev */});
+    setupNotifications().catch(() => {});
   }, []);
 
   return (

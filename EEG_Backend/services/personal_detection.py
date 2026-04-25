@@ -22,16 +22,16 @@ import hashlib as _hl
 N_CH          = 18
 FS            = 256
 CLIP_S        = 5
-CLEN          = FS * CLIP_S     # 1280 samples
-INTER_H       = 2               # interictal must be ≥2h from seizure
+CLEN          = FS * CLIP_S
+INTER_H       = 2
 POSTICTAL_H   = 2
-MA_S          = 15              # moving average window (seconds)
-THRESHOLD_W   = 0.6             # default alarm threshold
+MA_S          = 15
+THRESHOLD_W   = 0.6
 NORM_VERSION  = 3
 
 
-ICTAL_STRIDE_S = 1              # overlap stride for ictal clip extraction (seconds)
-ICTAL_STRIDE   = FS * ICTAL_STRIDE_S   # = 256 samples
+ICTAL_STRIDE_S = 1
+ICTAL_STRIDE   = FS * ICTAL_STRIDE_S
 
 ROOT = Path("data/chb_mit")
 
@@ -49,17 +49,17 @@ L = int(math.floor(math.log2(FS))) - 3
 DELTA0_S      = 3
 DISC_GATE_S   = 5
 DISC_INT_THRESH = 0.2
-SKIP_START_S  = 15              # skip first 15s for filter ringing
+SKIP_START_S  = 15
 
 WGAN_EPOCHS      = 100
 WGAN_LR          = 4e-5
 LAMBDA_GP        = 10.0
 DISC_FEATURE_DIM = 256
-WGAN_SEQ_LEN     = 2            # 2 clips × 5s = 10s (fits inside most seizures)
+WGAN_SEQ_LEN     = 2
 
 FOCAL_GAMMA     = 2.0
 FOCAL_ALPHA_INT = 1.5
-FOCAL_ALPHA_ICT = 1.0           # renamed from FOCAL_ALPHA_PRE
+FOCAL_ALPHA_ICT = 1.0
 
 HARD_NEG_FACTOR = 2.5
 HARD_NEG_SIM_THRESH = 0.7
@@ -111,15 +111,12 @@ MNE_OK = True
 
 
 def apply_clep_filter(data, sfreq=256):
-    """0.5–50 Hz bandpass, 5th-order Butterworth, zero-phase."""
     nyq = 0.5 * sfreq
     sos = butter(5, [0.5 / nyq, 50.0 / nyq], btype='bandpass', output='sos')
     return sosfiltfilt(sos, data, axis=1).astype(np.float32)
 
 
 def global_zscore(data, fit_minutes=5):
-    """Global z-score using first fit_minutes of recording.
-    Returns (normalised_data, mu, std) for checkpoint storage."""
     fit_samples = min(data.shape[1], int(fit_minutes * 60 * FS))
     fit_data = data[:, :fit_samples]
     mu  = fit_data.mean()
@@ -128,7 +125,6 @@ def global_zscore(data, fit_minutes=5):
 
 
 def parse_summary(path):
-    """Parse chbXX-summary.txt -> {filename: [(onset_s, offset_s), ...]}"""
     out, cur = {}, None
     with open(path) as f:
         for line in f:
@@ -156,7 +152,6 @@ def _dedup_channels(raw):
 
 
 def load_edf_raw(path):
-    """Load EDF -> pick CH18 -> resample to FS -> float32."""
     if not MNE_OK: return None
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -179,24 +174,15 @@ load_edf = load_edf_raw
 
 
 def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
-    """
-    Extract ICTAL + INTERICTAL clips for seizure detection.
-
-    Ictal clips:   extracted from [onset, offset] with overlapping stride
-                   (1-second step) because seizures can be as short as 10-20s.
-    Interictal:    ≥2h away from any USED seizure onset AND outside all
-                   ictal [onset, offset] windows.
-    """
     patient_dir = Path(patient_dir)
     sumf = list(patient_dir.glob('*-summary.txt'))
     if not sumf: return None, None
     szmap = parse_summary(sumf[0])
     edfs  = sorted(patient_dir.glob('*.edf'))
 
-    # Pass 1: build absolute seizure timeline (onset AND offset)
     file_starts = {}
     all_sz_onsets = []
-    all_sz_spans  = []      # (abs_onset, abs_offset) for ictal exclusion
+    all_sz_spans  = []
     cursor = 0.0
     for edf in edfs:
         try:
@@ -216,7 +202,6 @@ def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
     if len(all_sz_onsets) < 2:
         print(f'  Skip {patient_dir.name}: <2 seizures'); return None, None
 
-    # Cluster rule: first seizure per 2h window
     if use_cluster_rule:
         used_sz = []
         for t in sorted(all_sz_onsets):
@@ -227,7 +212,6 @@ def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
     used_set = set(used_sz)
     print(f'  {patient_dir.name}: {len(all_sz_onsets)} sz → {len(used_sz)} used')
 
-    # Pass 2: extract clips
     all_ictal, all_int = [], []
     for edf in edfs:
         abs_start, dur = file_starts.get(edf.name, (0, 0))
@@ -237,12 +221,9 @@ def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
         filtered  = apply_clep_filter(raw_data, sfreq=FS)
         norm_data = global_zscore(filtered)[0] if normalize else filtered
 
-        # ── ICTAL clips: strictly between onset and offset ────────
-        # Use overlapping 1-second stride because seizures are short
         for onset_r, offset_r in szmap.get(edf.name, []):
             abs_onset = abs_start + onset_r
             if abs_onset not in used_set: continue
-            # Ensure offset > onset and we have at least one clip
             if offset_r <= onset_r: continue
             start_samp = int(onset_r * FS)
             end_samp   = int(offset_r * FS)
@@ -251,15 +232,10 @@ def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
                 if c.shape[1] == CLEN:
                     all_ictal.append(c[None])
 
-        # ── INTERICTAL clips: ≥2h from USED seizures, outside ALL ictal spans
-        # FIX: uses used_sz (not all_sz) to avoid over-stripping
-        # FIX: also excludes the actual ictal period [onset, offset]
         for s in range(0, norm_data.shape[1] - CLEN, CLEN):
             t_abs = abs_start + s / FS
-            # Check ≥2h from all used seizure onsets
             if not all(abs(t_abs - sz) > INTER_H * 3600 for sz in used_sz):
                 continue
-            # Check not inside any ictal span (onset to offset)
             in_ictal = False
             for sz_on, sz_off in all_sz_spans:
                 if sz_on <= t_abs <= sz_off:
@@ -275,7 +251,6 @@ def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
 
     ictal = np.concatenate(all_ictal)
 
-    # Fallback: relax interictal gap if none found with 2h rule
     if not all_int:
         print(f'  [INFO] No 2h-clean interictal for {patient_dir.name}, relaxing to 30min')
         for edf in edfs:
@@ -299,7 +274,6 @@ def BPatDataset(patient_dir, use_cluster_rule=True, normalize=True):
 
     int_ = np.concatenate(all_int)
 
-    # Balance: sub-sample interictal to match ictal count
     if len(int_) > len(ictal):
         idx = np.round(np.linspace(0, len(int_) - 1, len(ictal))).astype(int)
         int_ = int_[idx]
@@ -957,7 +931,6 @@ def train_discriminator_wgan(encoder, discriminator, train_dataset,
     if best_disc_state is not None:
         discriminator.load_state_dict(best_disc_state)
 
-    # Calibrate discriminator offset
     discriminator.eval()
     ict_scores_list, int_scores_list = [], []
     with torch.no_grad():
@@ -1018,24 +991,7 @@ def save_patient_brain(model, discriminator, patient_id, disc_calibration=0.0,
 
 
 
-# ── Public training API (called by training_service.py) ──────────────────────
-
 def train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
-    """
-    Train a personal seizure detection model for one patient.
-
-    Parameters
-    ----------
-    patient_id       : str   – Supabase user UUID
-    patient_data_dir : str|Path – directory with ictal_*.csv, normal_*.csv, etc.
-    chb_mit_dir      : str|Path – CHB-MIT dataset root (for source-patient pretraining)
-    output_dir       : str|Path – where to save the .pt file
-    tier             : str   – version label, e.g. 'v1'
-
-    Returns
-    -------
-    (pt_path, meta_dict)
-    """
     import glob
     patient_data_dir = Path(patient_data_dir)
     chb_mit_dir      = Path(chb_mit_dir)
@@ -1045,7 +1001,6 @@ def train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
     PRETRAIN_EPOCHS = 50
     FINETUNE_EPOCHS = 60
 
-    # ── 1. Load patient data from uploaded CSVs ──────────────────────────────
     ictal_files  = sorted(glob.glob(str(patient_data_dir / "ictal_*.csv")))
     normal_files = sorted(glob.glob(str(patient_data_dir / "normal_*.csv")))
     fp_files     = sorted(glob.glob(str(patient_data_dir / "false_positives" / "false_positive_*.csv")))
@@ -1083,7 +1038,6 @@ def train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
 
     print(f'[train_detector] {patient_id}: {len(ictal_clips)} ictal, {len(normal_clips)} normal clips')
 
-    # ── 2. Load CHB-MIT source patients for pretraining ──────────────────────
     source_dss = []
     if chb_mit_dir.exists():
         for d in sorted(chb_mit_dir.glob('chb*')):
@@ -1097,7 +1051,6 @@ def train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
                 continue
         print(f'[train_detector] {len(source_dss)} source patients for pretraining')
 
-    # ── 3. Split train/val ───────────────────────────────────────────────────
     np.random.shuffle(normal_clips)
     split = max(1, int(len(ictal_clips) * 0.8))
     train_ict, val_ict = ictal_clips[:split], ictal_clips[split:]
@@ -1125,7 +1078,6 @@ def train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
     train_ds = EEGDataset(train_clips, train_labels)
     val_ds   = EEGDataset(val_clips, val_labels)
 
-    # ── 4. Build + pretrain + finetune ───────────────────────────────────────
     enc = build_model(E=N_CH).to(dev)
 
     if source_dss:
@@ -1144,14 +1096,12 @@ def train_detector(patient_id, patient_data_dir, chb_mit_dir, output_dir, tier):
 
     calib_thresh = calibrate_threshold(enc, val_ds, dev=dev)
 
-    # ── 5. WGAN discriminator ────────────────────────────────────────────────
     disc = SequenceWGANDiscriminator(DISC_FEATURE_DIM, WGAN_SEQ_LEN).to(dev)
     disc, disc_cal = train_discriminator_wgan(
         enc, disc, train_ds,
         epochs=WGAN_EPOCHS, batch_size=32, lr=WGAN_LR, lambda_gp=LAMBDA_GP, dev=dev,
     )
 
-    # ── 6. Save ──────────────────────────────────────────────────────────────
     pt_path = save_patient_brain(
         enc, disc, patient_id,
         disc_calibration=disc_cal,
@@ -1193,8 +1143,8 @@ if __name__ == '__main__':
 
   all_c = target_clips
   all_l = target_labels
-  ict   = all_c[all_l == 1]       # ictal clips
-  inte  = all_c[all_l == 0]       # interictal clips
+  ict   = all_c[all_l == 1]
+  inte  = all_c[all_l == 0]
 
   inte = inte[np.random.permutation(len(inte))]
 

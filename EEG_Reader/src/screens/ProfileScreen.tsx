@@ -41,7 +41,6 @@ export default function ProfileScreen() {
   const [posts, setPosts]             = useState<Post[]>([]);
   const [loading, setLoading]         = useState(true);
 
-  // Inline editing state (own profile only)
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValue, setEditValue]       = useState('');
 
@@ -69,8 +68,6 @@ export default function ProfileScreen() {
     })();
     return () => { cancelled = true; };
   }, [targetUserId, isOwnProfile, myProfile]);
-
-  // ── Edit helpers ──
 
   const startEdit = (field: string, currentValue: string) => {
     if (!isOwnProfile) return;
@@ -187,7 +184,6 @@ export default function ProfileScreen() {
     );
   }
 
-  // ── Editable text renderer ──
   const EditableField = ({ field, value, placeholder, style: textStyle, multiline }: {
     field: string; value: string; placeholder: string; style: any; multiline?: boolean;
   }) => {
@@ -237,7 +233,6 @@ export default function ProfileScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Background — tappable on own profile */}
         <TouchableOpacity
           style={styles.bgContainer}
           onPress={isOwnProfile ? handlePickBackground : undefined}
@@ -252,9 +247,7 @@ export default function ProfileScreen() {
           )}
         </TouchableOpacity>
 
-        {/* Profile header */}
         <View style={styles.profileHeader}>
-          {/* Avatar — tappable on own profile */}
           <TouchableOpacity
             onPress={isOwnProfile ? handlePickAvatar : undefined}
             activeOpacity={isOwnProfile ? 0.7 : 1}
@@ -271,7 +264,6 @@ export default function ProfileScreen() {
             {isOwnProfile && <Text style={styles.changeAvatarHint}>Change</Text>}
           </TouchableOpacity>
 
-          {/* Name — tappable to edit */}
           <EditableField
             field="full_name"
             value={profileData?.full_name || profileData?.patient_name || ''}
@@ -279,7 +271,6 @@ export default function ProfileScreen() {
             style={styles.profileName}
           />
 
-          {/* Username — tappable to edit */}
           <EditableField
             field="username"
             value={profileData?.username ? `@${profileData.username}` : ''}
@@ -289,7 +280,6 @@ export default function ProfileScreen() {
 
           <RoleBadge role={profileData?.role ?? 'patient'} size="medium" />
 
-          {/* Bio — tappable to edit */}
           <EditableField
             field="bio"
             value={profileData?.bio || ''}
@@ -298,7 +288,6 @@ export default function ProfileScreen() {
             multiline
           />
 
-          {/* Action buttons */}
           <View style={styles.actionRow}>
             {!isOwnProfile && (
               <TouchableOpacity
@@ -312,7 +301,6 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Stats */}
         <View style={styles.statsRow}>
           <View style={styles.statBox}>
             <Text style={styles.statNum}>{posts.length}</Text>
@@ -320,7 +308,6 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Posts */}
         <Text style={styles.sectionTitle}>{isOwnProfile ? 'MY POSTS' : 'POSTS'}</Text>
         {posts.length === 0 ? (
           <Text style={styles.emptyText}>No posts yet.</Text>
@@ -364,7 +351,6 @@ const styles = StyleSheet.create({
   content: { paddingBottom: 20 },
   emptyRoot: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
-  // Background
   bgContainer: { width: '100%', height: 140 },
   bgImage: { width: '100%', height: 140 },
   bgPlaceholder: {
@@ -373,7 +359,6 @@ const styles = StyleSheet.create({
   },
   bgHint: { color: '#334455', fontSize: 12 },
 
-  // Profile header
   profileHeader: { alignItems: 'center', marginTop: -40, paddingBottom: 16, gap: 8 },
   avatarLarge: {
     width: 80, height: 80, borderRadius: 40,
@@ -393,7 +378,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30, lineHeight: 20,
   },
 
-  // Inline edit
   editRow: { width: '80%', gap: 6, alignItems: 'center' },
   editInput: {
     width: '100%', backgroundColor: '#080D18', borderWidth: 1, borderColor: '#4499FF55',
@@ -407,7 +391,6 @@ const styles = StyleSheet.create({
   editSaveBtnText: { color: '#090915', fontSize: 12, fontWeight: '700' },
   editCancelText: { color: '#556677', fontSize: 12 },
 
-  // Actions
   actionRow: { flexDirection: 'row', gap: 10, marginTop: 8 },
   messageBtn: {
     paddingHorizontal: 24, paddingVertical: 10, borderRadius: 10,
@@ -415,7 +398,6 @@ const styles = StyleSheet.create({
   },
   messageBtnText: { color: '#090915', fontSize: 13, fontWeight: '700' },
 
-  // Stats
   statsRow: {
     flexDirection: 'row', borderTopWidth: 1, borderBottomWidth: 1,
     borderColor: '#0D1828', paddingVertical: 14, marginHorizontal: 16,
@@ -429,7 +411,6 @@ const styles = StyleSheet.create({
   },
   emptyText: { color: '#334455', textAlign: 'center', padding: 20 },
 
-  // Posts
   postCard: {
     marginHorizontal: 16, marginVertical: 4, backgroundColor: '#0D1220',
     borderRadius: 12, borderWidth: 1, borderColor: '#1E2E44', padding: 14, gap: 6,

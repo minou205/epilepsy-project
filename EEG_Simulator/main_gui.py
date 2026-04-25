@@ -29,9 +29,8 @@ except ImportError:
 DISPLAY_SECS   = 5
 BUFFER_SAMPLES = 256 * DISPLAY_SECS
 CHANNEL_OFFSET = 150
-MAX_DISPLAY_CH = 18   # raised to support the 18-ch standard preset
+MAX_DISPLAY_CH = 18
 
-# ── Channel presets ────────────────────────────────────────────────────────
 CHANNELS_9 = [
     'FP1-F7', 'F7-T7',
     'FP2-F8', 'F8-T8',
@@ -52,7 +51,6 @@ CHANNEL_COLORS = [
     "#00FF88", "#FF6644", "#4499FF", "#FFCC00",
     "#FF44CC", "#44FFFF", "#AAFF44", "#FF8833",
     "#CC44FF", "#44FFCC",
-    # extra colors for channels 11–18
     "#FF3366", "#33CCFF", "#FFAA00", "#AA44FF",
     "#00FFCC", "#FF6600", "#88FF00", "#FF0099",
 ]
@@ -501,8 +499,6 @@ class EEGMainWindow(QMainWindow):
         self.selected_chs = selected
         self.engine.set_pc_channels(selected)
         self._rebuild_plot_curves()
-        # Notify connected phones of the new channel list so their
-        # channel panel updates immediately.
         if self.ws_server.client_count > 0:
             asyncio.ensure_future(self.ws_server.broadcast_config())
 
@@ -521,11 +517,9 @@ class EEGMainWindow(QMainWindow):
         self._on_channel_toggle(None)
 
     def _on_apply_preset(self, preset: List[str], label: str) -> None:
-        """Check exactly the channels in `preset` (case-insensitive), uncheck rest."""
         if not self.data_handler.is_loaded:
             return
 
-        # Build a case-insensitive lookup: UPPER_NAME → actual name in the EDF
         edf_names    = self.data_handler.channel_names
         upper_to_edf = {n.upper(): n for n in edf_names}
 
@@ -539,7 +533,6 @@ class EEGMainWindow(QMainWindow):
             else:
                 missing.append(wanted)
 
-        # Apply checkbox state
         self.ch_list.blockSignals(True)
         matched_set = set(matched)
         for i in range(self.ch_list.count()):
@@ -547,16 +540,13 @@ class EEGMainWindow(QMainWindow):
             it.setCheckState(Qt.Checked if it.text() in matched_set else Qt.Unchecked)
         self.ch_list.blockSignals(False)
 
-        # Update engine + curves
         self.selected_chs = matched
         self.engine.set_pc_channels(matched)
         self._rebuild_plot_curves()
 
-        # Notify phone clients of the new channel selection
         if self.ws_server.client_count > 0:
             asyncio.ensure_future(self.ws_server.broadcast_config())
 
-        # Log result
         self._append_log(
             f"✓ {label} preset applied — {len(matched)} channel(s) selected"
         )
@@ -588,10 +578,8 @@ class EEGMainWindow(QMainWindow):
         else:
             self.btn_preview.setText("🚫  PC Preview: OFF")
             self.btn_preview.setObjectName("btn_preview_off")
-            # Clear stale curves immediately
             for curve in self.pc_curves:
                 curve.setData([], [])
-        # Force QSS re-evaluation for objectName change
         self.btn_preview.style().unpolish(self.btn_preview)
         self.btn_preview.style().polish(self.btn_preview)
         self._append_log(
@@ -611,8 +599,6 @@ class EEGMainWindow(QMainWindow):
             self._sync_channels_from_phone(data.get("channels", []))
 
     def _sync_channels_from_phone(self, channels: list) -> None:
-        # The phone is narrowing down within the PC's selection — update the
-        # engine's phone-side filter only; do NOT overwrite the PC GUI checkboxes.
         self.engine.set_phone_channels(channels)
         self._append_log(f"Phone filter → {channels}")
 
@@ -632,7 +618,6 @@ class EEGMainWindow(QMainWindow):
 
         self.lbl_clients.setText(f"Clients:  {self.ws_server.client_count}")
 
-        # Skip graph rendering when PC Preview is disabled (saves CPU)
         if not self._pc_preview_enabled:
             return
 
@@ -694,7 +679,7 @@ class EEGMainWindow(QMainWindow):
         names     = self.data_handler.channel_names
         upper_map = {n.upper(): n for n in names}
         matched   = []
-        for wanted in CHANNELS_9:
+        for wanted in CHANNELS_18:
             real = upper_map.get(wanted.upper())
             if real and real not in matched:
                 matched.append(real)
@@ -702,7 +687,7 @@ class EEGMainWindow(QMainWindow):
         if matched:
             return matched[:MAX_DISPLAY_CH]
 
-        return names[:min(9, len(names))]
+        return names[:min(18, len(names))]
 
     def _populate_channel_list(self) -> None:
         default_sel = self._get_default_channels()

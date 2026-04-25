@@ -1,10 +1,5 @@
 import { EEGSession } from '../hooks/useEEGSession';
 
-/**
- * Checks every 500ms whether the EEG signal has been lost (all zeros).
- * Calls `onLost(true)` when signal is absent for > thresholdMs,
- * and `onLost(false)` when signal recovers.
- */
 export class SignalChecker {
   private checkInterval : ReturnType<typeof setInterval> | null = null;
   private lastNonZeroAt : number = Date.now();
@@ -22,7 +17,6 @@ export class SignalChecker {
     const { displayData } = this.eegSession;
     if (displayData.length === 0) return;
 
-    // Check the first channel's latest 16 samples for all-zero
     const samples = displayData[0].data;
     const len     = samples.length;
     const tail    = Math.min(16, len);
@@ -41,11 +35,11 @@ export class SignalChecker {
       this.lastNonZeroAt = now;
       if (this.isLost) {
         this.isLost = false;
-        this.onLost(false); // signal recovered
+        this.onLost(false);
       }
     } else if (!this.isLost && (now - this.lastNonZeroAt) > this.thresholdMs) {
       this.isLost = true;
-      this.onLost(true); // signal lost
+      this.onLost(true);
     }
   }
 

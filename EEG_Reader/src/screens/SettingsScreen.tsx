@@ -52,18 +52,15 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
   const { user, profile, signOut, updateProfile } = useAuth();
   const { settings, updateSettings } = useAppSettings();
 
-  // Profile editing
   const [editingName,     setEditingName    ] = useState(profile?.full_name ?? '');
   const [editingUsername, setEditingUsername ] = useState(profile?.username ?? '');
   const [editingBio,      setEditingBio     ] = useState(profile?.bio ?? '');
   const [profileDirty,    setProfileDirty   ] = useState(false);
 
-  // Normal alarm time editing
   const [alarmHour,   setAlarmHour  ] = useState(0);
   const [alarmMinute, setAlarmMinute] = useState(0);
   const [alarmDirty,  setAlarmDirty ] = useState(false);
 
-  // Headset state
   const [headset,        setHeadset       ] = useState<HeadsetInfo | null>(null);
   const [headsetLoaded,  setHeadsetLoaded ] = useState(false);
   const [headsetNameDraft, setHeadsetNameDraft] = useState('');
@@ -87,7 +84,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
     setAlarmDirty(false);
   }, [profile?.normal_alarm_time]);
 
-  // Fetch the locked headset whenever patient/server settings change.
   useEffect(() => {
     if (role !== 'patient') return;
     if (!settings.patientId || !settings.serverBaseUrl) return;
@@ -156,8 +152,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
     );
   }
 
-  // ── Save handlers ──
-
   async function handleSaveProfile() {
     if (!profileDirty) return;
     try {
@@ -181,8 +175,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
     setAlarmDirty(false);
     Alert.alert('Saved', `Normal data alarm set to ${timeStr}`);
   }
-
-  // ── Image pickers ──
 
   async function handlePickAvatar() {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -222,8 +214,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
     }
   }
 
-  // ── Toggle handlers ──
-
   async function handleToggleConsentToTrain(value: boolean) {
     await updateProfile({ consent_to_train: value });
     updateSettings({ consentToTrain: value });
@@ -232,6 +222,10 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
   async function handleToggleAlarmSound(value: boolean) {
     await updateProfile({ alarm_sound_enabled: value });
     updateSettings({ alarmSoundEnabled: value });
+  }
+
+  async function handleToggleTrainNextVersion(value: boolean) {
+    await updateProfile({ train_next_version: value });
   }
 
   async function handleToggleShowName(value: boolean) {
@@ -292,12 +286,10 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* ── Edit Profile ── */}
         {!!profile && (
           <>
             <Text style={styles.sectionTitle}>PROFILE</Text>
             <View style={styles.card}>
-              {/* Avatar + Background */}
               <View style={styles.avatarSection}>
                 <TouchableOpacity onPress={handlePickAvatar} activeOpacity={0.7}>
                   {profile.avatar_url ? (
@@ -316,7 +308,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
                 </TouchableOpacity>
               </View>
 
-              {/* Name */}
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Full Name</Text>
                 <TextInput
@@ -329,7 +320,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
                 />
               </View>
 
-              {/* Username */}
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Username</Text>
                 <TextInput
@@ -343,7 +333,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
                 />
               </View>
 
-              {/* Bio */}
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Bio</Text>
                 <TextInput
@@ -357,7 +346,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
                 />
               </View>
 
-              {/* Role (read-only) */}
               <View style={styles.row}>
                 <Text style={styles.label}>Role</Text>
                 <RoleBadge role={role} size="medium" />
@@ -379,7 +367,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           </>
         )}
 
-        {/* ── Training & Model Config (patient only) ── */}
         {role === 'patient' && (
           <>
             <Text style={styles.sectionTitle}>TRAINING & MODELS</Text>
@@ -399,7 +386,21 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
                 />
               </View>
 
-              {/* General model config selector */}
+              <View style={styles.toggleRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.toggleLabel}>Train Next Personal Model Version</Text>
+                  <Text style={styles.toggleHint}>
+                    When off, no new model is trained after every 5 seizures. Auto-disables when you say you are satisfied with the current model.
+                  </Text>
+                </View>
+                <Switch
+                  value={profile?.train_next_version ?? true}
+                  onValueChange={handleToggleTrainNextVersion}
+                  thumbColor={profile?.train_next_version ? '#00FF88' : '#556677'}
+                  trackColor={{ false: '#1A2030', true: '#00FF8840' }}
+                />
+              </View>
+
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>General Model Configuration</Text>
                 <Text style={styles.toggleHint}>
@@ -423,7 +424,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
                 })}
               </View>
 
-              {/* Delete models */}
               <TouchableOpacity
                 style={styles.dangerBtn}
                 onPress={handleDeleteModels}
@@ -435,7 +435,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           </>
         )}
 
-        {/* ── Headset (patient only, after first registration) ── */}
         {role === 'patient' && headsetLoaded && headset && (
           <>
             <Text style={styles.sectionTitle}>HEADSET</Text>
@@ -492,7 +491,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           </>
         )}
 
-        {/* ── Normal Alarm Time (patient only) ── */}
         {role === 'patient' && (
           <>
             <Text style={styles.sectionTitle}>NORMAL DATA ALARM</Text>
@@ -548,7 +546,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           </>
         )}
 
-        {/* ── Privacy ── */}
         <Text style={styles.sectionTitle}>PRIVACY</Text>
         <View style={styles.card}>
           <View style={styles.toggleRow}>
@@ -581,7 +578,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           </View>
         </View>
 
-        {/* ── Channels ── */}
         <Text style={styles.sectionTitle}>CHANNELS ({session.selectedChannels.length}/{session.config?.channels.length ?? 0})</Text>
         <View style={styles.card}>
           <View style={styles.bulkRow}>
@@ -610,7 +606,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           })}
         </View>
 
-        {/* ── Notifications ── */}
         <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
         <View style={styles.card}>
           <View style={styles.toggleRow}>
@@ -624,7 +619,6 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
           </View>
         </View>
 
-        {/* ── Actions ── */}
         <View style={styles.footerActions}>
           <TouchableOpacity
             style={styles.disconnectBtn}
@@ -680,7 +674,6 @@ const styles = StyleSheet.create({
   },
   uuidText: { color: '#4499FF', fontSize: 11, fontFamily: MONO, fontWeight: '600' },
 
-  // Avatar section
   avatarSection: {
     alignItems: 'center', paddingVertical: 16, gap: 8,
     borderBottomWidth: 1, borderBottomColor: '#141828',
@@ -694,7 +687,6 @@ const styles = StyleSheet.create({
   changePhotoText: { color: '#4499FF', fontSize: 12, fontWeight: '600', marginTop: 4 },
   changeBgText: { color: '#556677', fontSize: 11 },
 
-  // Toggles
   toggleRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingVertical: 12, paddingHorizontal: 14,
@@ -702,7 +694,6 @@ const styles = StyleSheet.create({
   toggleLabel: { color: '#CCDDEE', fontSize: 13, fontWeight: '600', fontFamily: MONO },
   toggleHint: { color: '#445566', fontSize: 10, fontFamily: MONO, marginTop: 2 },
 
-  // Inputs
   inputGroup: { padding: 14, gap: 6 },
   inputLabel: { color: '#556677', fontSize: 12, fontFamily: MONO },
   input: {
@@ -718,14 +709,12 @@ const styles = StyleSheet.create({
     color: '#AABBCC', fontSize: 11, fontFamily: MONO, lineHeight: 16,
   },
 
-  // Action buttons
   actionBtn: {
     marginHorizontal: 14, marginBottom: 10, paddingVertical: 10, alignItems: 'center',
     borderRadius: 8, borderWidth: 1, borderColor: '#4499FF55', backgroundColor: '#4499FF12',
   },
   actionBtnText: { color: '#4499FF', fontSize: 12, fontWeight: '600' },
 
-  // Radio
   radioRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, paddingHorizontal: 4,
@@ -739,14 +728,12 @@ const styles = StyleSheet.create({
   radioLabel: { color: '#556677', fontSize: 12, fontFamily: MONO },
   radioLabelSelected: { color: '#CCDDEE' },
 
-  // Danger
   dangerBtn: {
     marginHorizontal: 14, marginVertical: 10, paddingVertical: 10, alignItems: 'center',
     borderRadius: 8, borderWidth: 1, borderColor: '#FF664444', backgroundColor: '#FF664410',
   },
   dangerBtnText: { color: '#FF6644', fontSize: 12, fontWeight: '600' },
 
-  // Alarm time
   alarmTimeRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     paddingVertical: 16, gap: 6,
@@ -764,7 +751,6 @@ const styles = StyleSheet.create({
   colonText: { color: '#4499FF', fontSize: 20, fontWeight: '700', fontFamily: MONO, marginHorizontal: 4 },
   alarmInfo: { color: '#445566', fontSize: 11, fontFamily: MONO, textAlign: 'center', paddingBottom: 10 },
 
-  // Channels
   bulkRow: { flexDirection: 'row', gap: 8, padding: 14 },
   bulkBtn: { paddingVertical: 5, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: '#1E2E44' },
   bulkBtnTextGreen: { color: '#00FF88', fontSize: 12, fontWeight: '600' },
@@ -778,7 +764,6 @@ const styles = StyleSheet.create({
   chName: { flex: 1, color: '#445566', fontSize: 13, fontFamily: MONO, fontWeight: '500' },
   chCheck: { fontSize: 13, fontWeight: '700' },
 
-  // Footer
   footerActions: { marginTop: 24, gap: 10, marginBottom: 30 },
   disconnectBtn: {
     paddingVertical: 12, alignItems: 'center', borderRadius: 10,

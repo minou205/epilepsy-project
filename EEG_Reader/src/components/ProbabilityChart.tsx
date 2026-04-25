@@ -5,13 +5,13 @@ import Svg, { Path, Line, Rect, Text as SvgText } from 'react-native-svg';
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
 interface ProbabilityChartProps {
-  title        : string;       // "Prediction" | "Detection"
-  data         : number[];     // rolling probability values (0-1)
-  threshold    : number;       // calibration threshold line
-  color        : string;       // '#FFCC00' (prediction) | '#FF4444' (detection)
-  maxPoints   ?: number;       // default 60 (5 min at 5s intervals)
-  intervalSecs?: number;       // default 5
-  height      ?: number;       // default 120
+  title        : string;
+  data         : number[];
+  threshold    : number;
+  color        : string;
+  maxPoints   ?: number;
+  intervalSecs?: number;
+  height      ?: number;
 }
 
 export default function ProbabilityChart({
@@ -24,10 +24,10 @@ export default function ProbabilityChart({
   height       = 120,
 }: ProbabilityChartProps) {
   const screenWidth = Dimensions.get('window').width;
-  const MARGIN_H    = 12;  // horizontal margin on each side
-  const Y_AXIS_W    = 28;  // space for Y-axis labels inside SVG
+  const MARGIN_H    = 12;
+  const Y_AXIS_W    = 28;
   const svgWidth    = screenWidth - MARGIN_H * 2;
-  const chartWidth  = svgWidth - Y_AXIS_W - 4; // plotting area
+  const chartWidth  = svgWidth - Y_AXIS_W - 4;
   const chartHeight = height;
 
   const linePath = useMemo(() => {
@@ -46,7 +46,6 @@ export default function ProbabilityChart({
 
   const thresholdY = chartHeight - (threshold * chartHeight);
 
-  // Time labels: show every ~1min
   const timeLabels = useMemo(() => {
     const labels: { x: number; label: string }[] = [];
     const totalSecs = maxPoints * intervalSecs;
@@ -65,7 +64,6 @@ export default function ProbabilityChart({
     return labels;
   }, [chartWidth, maxPoints, intervalSecs]);
 
-  // Y-axis labels
   const yLabels = [
     { y: 0, label: '1.0' },
     { y: chartHeight * 0.5, label: '0.5' },
@@ -76,17 +74,14 @@ export default function ProbabilityChart({
     <View style={styles.container}>
       <Text style={[styles.title, { color }]}>{title}</Text>
       <Svg width={svgWidth} height={chartHeight + 20}>
-        {/* Background for chart area */}
         <Rect x={Y_AXIS_W} y={0} width={chartWidth} height={chartHeight} fill="#0A0A18" rx={4} />
 
-        {/* Danger zone above threshold */}
         <Rect
           x={Y_AXIS_W} y={0}
           width={chartWidth} height={thresholdY}
           fill={color + '08'}
         />
 
-        {/* Threshold line (dashed) */}
         <Line
           x1={Y_AXIS_W} y1={thresholdY}
           x2={Y_AXIS_W + chartWidth} y2={thresholdY}
@@ -95,7 +90,6 @@ export default function ProbabilityChart({
           strokeDasharray="6,4"
         />
 
-        {/* Probability line */}
         {linePath !== '' && (
           <Path
             d={linePath}
@@ -105,7 +99,6 @@ export default function ProbabilityChart({
           />
         )}
 
-        {/* Y-axis labels */}
         {yLabels.map(({ y, label }) => (
           <SvgText
             key={label}
@@ -116,7 +109,6 @@ export default function ProbabilityChart({
           </SvgText>
         ))}
 
-        {/* X-axis labels */}
         {timeLabels.map(({ x, label }) => (
           <SvgText
             key={label}
@@ -127,7 +119,6 @@ export default function ProbabilityChart({
           </SvgText>
         ))}
 
-        {/* No data message */}
         {data.length === 0 && (
           <SvgText
             x={Y_AXIS_W + chartWidth / 2} y={chartHeight / 2 + 4}

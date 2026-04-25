@@ -1,7 +1,3 @@
-"""
-Inference endpoint — receives EEG windows from the phone and returns
-seizure prediction/detection probabilities using PyTorch .pt models.
-"""
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +9,6 @@ from config import GENERAL_PREDICTOR_PT, GENERAL_DETECTOR_PT
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 
-
-# ── Request / Response schemas ────────────────────────────────────────────────
 
 class InferenceRequest(BaseModel):
     patient_id: str
@@ -32,27 +26,20 @@ class InferenceRequest(BaseModel):
 class InferenceResponse(BaseModel):
     predictor_prob: Optional[float] = None
     detector_prob: Optional[float] = None
-    predictor_label: Optional[str] = None   # 'normal' | 'preictal'
-    detector_label: Optional[str] = None    # 'normal' | 'ictal'
-    tier: str                                # 'none' | 'general' | 'v1' | 'v2' …
+    predictor_label: Optional[str] = None
+    detector_label: Optional[str] = None
+    predictor_threshold: Optional[float] = None
+    detector_threshold: Optional[float] = None
+    tier: str
     has_predictor: bool
     has_detector: bool
 
-
-# ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/run", response_model=InferenceResponse)
 async def run_inference_endpoint(
     req: InferenceRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Run seizure prediction and/or detection on a 5-second EEG window.
-
-    The phone sends 18 channels × 1280 samples every ~4 seconds.
-    The server loads the appropriate .pt model (personal or general),
-    runs a forward pass, and returns probabilities.
-    """
     result = await run_inference(
         patient_id=req.patient_id,
         eeg_data=req.eeg_data,
@@ -62,14 +49,8 @@ async def run_inference_endpoint(
     return InferenceResponse(**result)
 
 
-# ── Model status endpoint (for debugging) ────────────────────────────────────
-
 @router.get("/models/status")
 async def models_status():
-    """
-    Returns which general models are available on disk and loaded in cache.
-    Useful for debugging "no models" issues from the phone.
-    """
     predictor_on_disk = GENERAL_PREDICTOR_PT.exists()
     detector_on_disk  = GENERAL_DETECTOR_PT.exists()
     predictor_cached  = model_cache.is_loaded("general_predictor")

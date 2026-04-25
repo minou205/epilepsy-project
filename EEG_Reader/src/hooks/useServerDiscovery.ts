@@ -41,9 +41,7 @@ export function useServerDiscovery() {
       updateSettings({ serverBaseUrl: url });
     };
 
-    fetchDiscoveredUrl().then(applyDiscoveredUrl).catch(() => {
-      // ignore discovery failures; app can fall back to manual scan
-    });
+    fetchDiscoveredUrl().then(applyDiscoveredUrl).catch(() => {});
 
     const channel = supabase
       .channel('system_config_backend_url')

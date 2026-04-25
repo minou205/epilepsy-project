@@ -1,23 +1,15 @@
-/**
- * Local archive for alarm events and their probability traces.
- *
- * Stores data as JSON files in the app's document directory.
- * Also syncs to the backend so helpers can view patient archives remotely.
- */
 import * as FileSystem from 'expo-file-system/legacy';
-
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ArchivedAlarm {
   id             : string;
   type           : 'prediction' | 'detection';
   tier           : string;
-  timestamp      : number;   // ms since epoch
-  confirmed      : boolean;  // true = real seizure, false = auto-no or user-denied
+  timestamp      : number;
+  confirmed      : boolean;
   probabilityTrace: {
     predictorProbs: number[];
     detectorProbs : number[];
-    timestamps    : number[];   // ms since epoch for each recorded probability
+    timestamps    : number[];
   };
 }
 
@@ -28,8 +20,6 @@ export interface ArchiveStats {
   confirmedReal: number;
   falseAlarms  : number;
 }
-
-// ── Storage ──────────────────────────────────────────────────────────────────
 
 const ARCHIVE_DIR = `${FileSystem.documentDirectory}archive/`;
 
@@ -48,9 +38,7 @@ export async function saveAlarmToArchive(
   try {
     const raw = await FileSystem.readAsStringAsync(path);
     existing = JSON.parse(raw);
-  } catch {
-    // File doesn't exist yet — start fresh
-  }
+  } catch {}
 
   existing.push(alarm);
   await FileSystem.writeAsStringAsync(path, JSON.stringify(existing));
@@ -61,11 +49,17 @@ export async function loadArchive(patientId: string): Promise<ArchivedAlarm[]> {
   try {
     const raw = await FileSystem.readAsStringAsync(path);
     const parsed: ArchivedAlarm[] = JSON.parse(raw);
-    // Return newest first
     return parsed.sort((a, b) => b.timestamp - a.timestamp);
   } catch {
     return [];
   }
+}
+
+export async function clearArchive(patientId: string): Promise<void> {
+  const path = archivePath(patientId);
+  try {
+    await FileSystem.deleteAsync(path, { idempotent: true });
+  } catch {}
 }
 
 export async function getArchiveStats(patientId: string): Promise<ArchiveStats> {
@@ -79,8 +73,6 @@ export async function getArchiveStats(patientId: string): Promise<ArchiveStats> 
     falseAlarms  : alarms.filter(a => !a.confirmed).length,
   };
 }
-
-// ── Backend sync ─────────────────────────────────────────────────────────────
 
 export async function syncAlarmToBackend(
   serverBaseUrl: string,
@@ -103,7 +95,6 @@ export async function syncAlarmToBackend(
       }),
     });
   } catch (err) {
-    // Non-critical — local archive is the source of truth
     console.warn('[Archive] Backend sync failed:', err);
   }
 }

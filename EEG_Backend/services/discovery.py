@@ -1,11 +1,3 @@
-"""
-Service discovery for the EHSS backend.
-
-This module writes the backend's reachable public endpoint into Supabase so the
-mobile app can subscribe and connect automatically. It prefers a tunnel URL if
-one is configured, otherwise it falls back to the local LAN IP and default port.
-"""
-
 import asyncio
 import logging
 import os

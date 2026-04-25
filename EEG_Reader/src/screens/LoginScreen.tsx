@@ -15,37 +15,38 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../services/AuthContext';
+import { supabase } from '../services/supabaseClient';
 import type { UserRole } from '../services/supabaseClient';
+import {
+  findUserByUsername,
+  sendHelperRequest,
+  submitDoctorVerification,
+} from '../services/AssociationService';
 
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
-/** Convert common birthday formats to ISO YYYY-MM-DD for Supabase. */
 function normaliseBirthday(raw: string): string | null {
   if (!raw) return null;
-  // Already ISO? (2005-03-14)
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  // DDMMYYYY (14032005) or MMDDYYYY
   if (/^\d{8}$/.test(raw)) {
     const d = raw.slice(0, 2), m = raw.slice(2, 4), y = raw.slice(4);
-    // If first two digits > 12, it's DD/MM/YYYY
     return Number(d) > 12
       ? `${y}-${m}-${d}`
       : `${y}-${d}-${m}`;
   }
-  // DD/MM/YYYY or DD-MM-YYYY
   const parts = raw.split(/[/\-.]/).map(s => s.trim());
   if (parts.length === 3) {
     let [a, b, c] = parts;
     if (a.length === 4) return `${a}-${b.padStart(2, '0')}-${c.padStart(2, '0')}`;
     if (c.length === 4) {
-      // a/b/c = DD/MM/YYYY or MM/DD/YYYY
       return Number(a) > 12
         ? `${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`
         : `${c}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`;
     }
   }
-  return raw; // can't parse — pass through as-is
+  return raw;
 }
 
 type Tab = 'login' | 'signup';
@@ -72,6 +73,8 @@ export default function LoginScreen() {
   const [loading,  setLoading ] = useState(false);
   const [error,    setError   ] = useState<string | null>(null);
   const [success,  setSuccess ] = useState<string | null>(null);
+  const [partnerUsername, setPartnerUsername] = useState('');
+  const [docUri,          setDocUri         ] = useState<string | null>(null);
 
   const switchTab = useCallback((t: Tab) => {
     setTab(t);
@@ -91,6 +94,23 @@ export default function LoginScreen() {
     setLoading(false);
   }, [email, password, signIn]);
 
+  const pickDoctorDoc = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      setError('Permission to access media library denied.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes : ImagePicker.MediaTypeOptions.Images,
+      quality    : 0.7,
+      allowsEditing: false,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setDocUri(result.assets[0].uri);
+      setError(null);
+    }
+  }, []);
+
   const handleSignUp = useCallback(async () => {
     if (!email.trim() || !password || !name.trim() || !username.trim()) {
       setError('Please fill in all required fields.');
@@ -100,45 +120,100 @@ export default function LoginScreen() {
       setError('Password must be at least 6 characters.');
       return;
     }
+    if (!birthday.trim() || !normaliseBirthday(birthday.trim())) {
+      setError('Please enter a valid birthday (YYYY-MM-DD).');
+      return;
+    }
     if (!consent) {
       setError('Please accept the data consent to continue.');
       return;
     }
+
+    const wantsAssociation = partnerUsername.trim().length > 0;
+    let partnerProfile = null as Awaited<ReturnType<typeof findUserByUsername>>;
+    if (wantsAssociation) {
+      if (role === 'supporter') {
+        setError('Supporters do not associate with patients.');
+        return;
+      }
+      partnerProfile = await findUserByUsername(partnerUsername);
+      if (!partnerProfile) {
+        setError(`User "@${partnerUsername.trim().toLowerCase()}" not found.`);
+        return;
+      }
+      if (role === 'patient' && partnerProfile.role !== 'helper' && partnerProfile.role !== 'doctor') {
+        setError('The person you selected must be a helper or doctor.');
+        return;
+      }
+      if ((role === 'helper' || role === 'doctor') && partnerProfile.role !== 'patient') {
+        setError('You can only associate with a patient account.');
+        return;
+      }
+    }
+
     setLoading(true);
     setError(null);
+
     const err = await signUp({
       email   : email.trim().toLowerCase(),
       password,
       fullName: name.trim(),
       username: username.trim(),
-      birthday: normaliseBirthday(birthday.trim()) || null,
+      birthday: normaliseBirthday(birthday.trim()),
       bio     : bio.trim(),
       role,
       consent,
     });
     if (err) {
       setError(err.message);
-    } else {
-      setSuccess(
-        'Account created! Check your email to confirm, then sign in.\n\n'
-        + 'If email confirmation is disabled, you are already signed in.',
-      );
-      // One-time headset warning for new patients. Once they upload their
-      // first recording the backend locks them to that exact channel set,
-      // and switching headsets later means wiping all collected data.
-      if (role === 'patient') {
-        Alert.alert(
-          'Important: One Headset Per Patient',
-          "Please use only ONE EEG headset for all your recordings.\n\n"
-          + "Your first recording locks the app to that headset's exact channel set. "
-          + "If you switch headsets later, we will need to delete your old data and "
-          + "start collecting from scratch.",
-          [{ text: 'I understand' }],
-        );
+      setLoading(false);
+      return;
+    }
+
+    const newUserId = (await supabase.auth.getUser()).data.user?.id ?? null;
+
+    if (newUserId && wantsAssociation && partnerProfile) {
+      const initiatedBy: 'patient' | 'helper' = role === 'patient' ? 'patient' : 'helper';
+      const patientId = role === 'patient' ? newUserId : partnerProfile.id;
+      const helperId  = role === 'patient' ? partnerProfile.id : newUserId;
+      const res = await sendHelperRequest(patientId, helperId, initiatedBy);
+      if (!res.ok) {
+        console.warn('[Signup] helper request failed:', res.error);
       }
     }
+
+    if (newUserId && role === 'doctor' && docUri) {
+      const res = await submitDoctorVerification(newUserId, docUri);
+      if (!res.ok) {
+        console.warn('[Signup] doctor verification upload failed:', res.error);
+      }
+    }
+
+    setSuccess(
+      'Account created! Check your email to confirm, then sign in.\n\n'
+      + 'If email confirmation is disabled, you are already signed in.',
+    );
+    if (role === 'patient') {
+      Alert.alert(
+        'Important: One Headset Per Patient',
+        "Please use only ONE EEG headset for all your recordings.\n\n"
+        + "Your first recording locks the app to that headset's exact channel set. "
+        + "If you switch headsets later, we will need to delete your old data and "
+        + "start collecting from scratch.",
+        [{ text: 'I understand' }],
+      );
+    }
+    if (role === 'doctor') {
+      Alert.alert(
+        'Doctor Verification',
+        docUri
+          ? 'Your credential document was uploaded and is pending review.'
+          : 'You can upload a verification document from Settings later to get your verified badge.',
+        [{ text: 'OK' }],
+      );
+    }
     setLoading(false);
-  }, [email, password, name, username, birthday, bio, role, consent, signUp]);
+  }, [email, password, name, username, birthday, bio, role, consent, partnerUsername, docUri, signUp]);
 
   const handleSubmit = tab === 'login' ? handleLogin : handleSignUp;
 
@@ -156,7 +231,6 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}
         >
 
-          {/* Branding */}
           <View style={styles.header}>
             <Image
               source={require('../../assets/logo.png')}
@@ -167,7 +241,6 @@ export default function LoginScreen() {
             <Text style={styles.subtitle}>Epilepsy monitoring & seizure detection</Text>
           </View>
 
-          {/* Tab switcher */}
           <View style={styles.tabRow}>
             <TouchableOpacity
               style={[styles.tab, tab === 'login' && styles.tabActive]}
@@ -185,7 +258,6 @@ export default function LoginScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Form card */}
           <View style={styles.card}>
 
             {!!error && (
@@ -199,7 +271,6 @@ export default function LoginScreen() {
               </View>
             )}
 
-            {/* Email */}
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Email</Text>
               <TextInput
@@ -215,7 +286,6 @@ export default function LoginScreen() {
               />
             </View>
 
-            {/* Password */}
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Password</Text>
               <TextInput
@@ -230,7 +300,6 @@ export default function LoginScreen() {
               />
             </View>
 
-            {/* Sign-up-only fields */}
             {tab === 'signup' && (
               <>
                 <View style={styles.inputGroup}>
@@ -286,7 +355,6 @@ export default function LoginScreen() {
                   />
                 </View>
 
-                {/* Role selector */}
                 <Text style={styles.label}>I am a...</Text>
                 <View style={styles.roleList}>
                   {ROLES.map(r => (
@@ -304,7 +372,49 @@ export default function LoginScreen() {
                   ))}
                 </View>
 
-                {/* Consent */}
+                {role !== 'supporter' && (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>
+                      {role === 'patient'
+                        ? 'Helper\'s username (optional)'
+                        : 'Patient\'s username (optional)'}
+                    </Text>
+                    <TextInput
+                      style={styles.input}
+                      value={partnerUsername}
+                      onChangeText={v => { setPartnerUsername(v.toLowerCase()); setError(null); }}
+                      placeholder={role === 'patient' ? 'someone_who_helps' : 'the_patient_username'}
+                      placeholderTextColor="#334455"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="next"
+                    />
+                    <Text style={styles.hint}>
+                      {role === 'patient'
+                        ? 'They will get a request to become your helper. Leave blank to skip.'
+                        : 'The patient will get a request to add you. Leave blank to skip.'}
+                    </Text>
+                  </View>
+                )}
+
+                {role === 'doctor' && (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Verification document (optional)</Text>
+                    <TouchableOpacity
+                      style={styles.docPickerBtn}
+                      onPress={pickDoctorDoc}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.docPickerText}>
+                        {docUri ? 'Document selected — tap to change' : 'Upload medical license / ID'}
+                      </Text>
+                    </TouchableOpacity>
+                    <Text style={styles.hint}>
+                      Image of a medical license or institutional ID. Reviewed by admins — once approved you get the verified badge.
+                    </Text>
+                  </View>
+                )}
+
                 <View style={styles.consentCard}>
                   <View style={styles.consentRow}>
                     <Switch
@@ -324,7 +434,6 @@ export default function LoginScreen() {
               </>
             )}
 
-            {/* Submit button */}
             <TouchableOpacity
               style={[styles.primaryBtn, loading && styles.btnDisabled]}
               onPress={handleSubmit}
@@ -379,6 +488,13 @@ const styles = StyleSheet.create({
   roleLabel: { color: '#556677', fontSize: 14, fontWeight: '700' },
   roleLabelActive: { color: '#4499FF' },
   roleDesc: { color: '#334455', fontSize: 11, marginTop: 2 },
+  hint: { color: '#334455', fontSize: 11, marginTop: 4, lineHeight: 15 },
+  docPickerBtn: {
+    backgroundColor: '#080D18', borderWidth: 1, borderColor: '#4499FF55',
+    borderRadius: 10, paddingVertical: 13, paddingHorizontal: 14, alignItems: 'center',
+    borderStyle: 'dashed',
+  },
+  docPickerText: { color: '#4499FF', fontSize: 13, fontWeight: '600', fontFamily: MONO },
   consentCard: {
     backgroundColor: '#080D18', borderRadius: 10, borderWidth: 1,
     borderColor: '#1E2E44', padding: 14, gap: 10,

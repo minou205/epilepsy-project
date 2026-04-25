@@ -7,8 +7,7 @@ import React, {
 } from 'react';
 import { AuthError, Session, User } from '@supabase/supabase-js';
 import { supabase, UserProfile, UserRole } from './supabaseClient';
-
-// ── Sign-up payload ──────────────────────────────────────────────────────────
+import { getExpoPushToken } from './NotificationService';
 
 export interface SignUpPayload {
   email   : string;
@@ -20,8 +19,6 @@ export interface SignUpPayload {
   role    : UserRole;
   consent : boolean;
 }
-
-// ── Context shape ─────────────────────────────────────────────────────────────
 
 interface AuthContextValue {
   session  : Session     | null;
@@ -36,11 +33,7 @@ interface AuthContextValue {
   fetchProfile(uid: string): Promise<void>;
 }
 
-// ── Context ───────────────────────────────────────────────────────────────────
-
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-// ── Provider ──────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session,   setSession  ] = useState<Session     | null>(null);
@@ -48,7 +41,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile,   setProfile  ] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // ── Profile fetch ──────────────────────────────────────────────────────────
+  const syncPushToken = useCallback(async (uid: string, existing: string | null) => {
+    const token = await getExpoPushToken();
+    if (!token || token === existing) return;
+    const { error } = await supabase
+      .from('profiles')
+      .update({ expo_push_token: token })
+      .eq('id', uid);
+    if (error) {
+      console.warn('[Auth] Failed to sync push token:', error.message);
+    }
+  }, []);
 
   const fetchProfile = useCallback(async (uid: string) => {
     const { data, error } = await supabase
@@ -58,8 +61,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .single();
     if (!error && data) {
       setProfile(data as UserProfile);
+      syncPushToken(uid, (data as UserProfile).expo_push_token ?? null).catch(() => {});
     } else {
-      // Profile row missing — auto-create a minimal one so FK constraints work
       const authUser = (await supabase.auth.getUser()).data.user;
       const email = authUser?.email ?? '';
       const fallbackName = email.split('@')[0] || 'User';
@@ -82,14 +85,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!createErr && created) {
         console.log('[Auth] Auto-created missing profile for', uid);
         setProfile(created as UserProfile);
+        syncPushToken(uid, null).catch(() => {});
       } else {
         console.warn('[Auth] Failed to auto-create profile:', createErr?.message);
         setProfile(null);
       }
     }
-  }, []);
-
-  // ── Session bootstrap ──────────────────────────────────────────────────────
+  }, [syncPushToken]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: s } }) => {
@@ -117,8 +119,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => subscription.unsubscribe();
   }, [fetchProfile]);
-
-  // ── Auth actions ───────────────────────────────────────────────────────────
 
   const signIn = useCallback(async (
     email   : string,
@@ -187,8 +187,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     </AuthContext.Provider>
   );
 }
-
-// ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
