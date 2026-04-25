@@ -20,6 +20,7 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS tracker_notifications_enabled BOOL
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS alarm_sound_enabled BOOLEAN DEFAULT true;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS expo_push_token TEXT;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS train_next_version BOOLEAN DEFAULT true;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS alarm_sound TEXT DEFAULT 'default';
 
 -- Migrate existing data: copy patient_name to full_name if not set
 UPDATE profiles SET full_name = patient_name WHERE full_name IS NULL;

@@ -21,6 +21,8 @@ import { EEGSession }     from '../hooks/useEEGSession';
 import { CHANNEL_COLORS } from '../hooks/useEEGSession';
 import { uploadImageToStorage } from '../services/CommunityService';
 import { BackendClient }  from '../services/BackendClient';
+import { ALARM_SOUNDS, DEFAULT_ALARM_SOUND_ID } from '../constants/alarmSounds';
+import { triggerAlarmNotification, scheduleNormalDataReminder } from '../services/NotificationService';
 import {
   HeadsetInfo,
   fetchHeadset,
@@ -172,8 +174,9 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
     const pad = (n: number) => n.toString().padStart(2, '0');
     const timeStr = `${pad(alarmHour)}:${pad(alarmMinute)}`;
     await updateProfile({ normal_alarm_time: timeStr });
+    await scheduleNormalDataReminder(timeStr);
     setAlarmDirty(false);
-    Alert.alert('Saved', `Normal data alarm set to ${timeStr}`);
+    Alert.alert('Saved', `Daily EEG reminder set for ${timeStr}`);
   }
 
   async function handlePickAvatar() {
@@ -226,6 +229,18 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
 
   async function handleToggleTrainNextVersion(value: boolean) {
     await updateProfile({ train_next_version: value });
+  }
+
+  async function handleSelectAlarmSound(soundId: string) {
+    await updateProfile({ alarm_sound: soundId });
+  }
+
+  async function handlePreviewAlarmSound(soundId: string) {
+    try {
+      await triggerAlarmNotification('detection', 'Sound preview', soundId);
+    } catch (err) {
+      console.warn('[Settings] preview failed', err);
+    }
   }
 
   async function handleToggleShowName(value: boolean) {
@@ -617,6 +632,42 @@ export default function SettingsScreen({ session }: SettingsScreenProps) {
               trackColor={{ false: '#1A2030', true: '#00FF8840' }}
             />
           </View>
+
+          {(profile?.alarm_sound_enabled ?? true) && (
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Sound</Text>
+              <Text style={styles.toggleHint}>
+                Pick the tone played when an alarm fires. Tap "Preview" to hear it.
+              </Text>
+              {ALARM_SOUNDS.map(opt => {
+                const selected = (profile?.alarm_sound ?? DEFAULT_ALARM_SOUND_ID) === opt.id;
+                return (
+                  <View key={opt.id} style={styles.soundRow}>
+                    <TouchableOpacity
+                      style={[styles.radioRow, selected && styles.radioRowSelected, { flex: 1 }]}
+                      onPress={() => handleSelectAlarmSound(opt.id)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.radioDot}>
+                        {selected && <View style={styles.radioDotInner} />}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.radioLabel, selected && { color: '#E8F0FF' }]}>{opt.label}</Text>
+                        <Text style={styles.radioHint}>{opt.description}</Text>
+                      </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.previewBtn}
+                      onPress={() => handlePreviewAlarmSound(opt.id)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.previewBtnText}>Preview</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </View>
+          )}
         </View>
 
         <View style={styles.footerActions}>
@@ -725,8 +776,25 @@ const styles = StyleSheet.create({
     borderColor: '#334455', backgroundColor: 'transparent',
   },
   radioDotSelected: { borderColor: '#4499FF', backgroundColor: '#4499FF' },
+  radioDotInner: {
+    width: 8, height: 8, borderRadius: 4, backgroundColor: '#4499FF',
+    margin: 'auto' as any,
+  },
   radioLabel: { color: '#556677', fontSize: 12, fontFamily: MONO },
   radioLabelSelected: { color: '#CCDDEE' },
+  radioHint: { color: '#445566', fontSize: 11, fontFamily: MONO, marginTop: 2 },
+
+  soundRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    borderBottomWidth: 1, borderBottomColor: '#0D1828',
+  },
+  previewBtn: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6,
+    borderWidth: 1, borderColor: '#1E3060', backgroundColor: '#0A1828',
+  },
+  previewBtnText: {
+    color: '#4499FF', fontSize: 11, fontWeight: '600', fontFamily: MONO,
+  },
 
   dangerBtn: {
     marginHorizontal: 14, marginVertical: 10, paddingVertical: 10, alignItems: 'center',

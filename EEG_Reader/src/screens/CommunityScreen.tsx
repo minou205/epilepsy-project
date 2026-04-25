@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Alert,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
@@ -68,6 +69,7 @@ export default function CommunityScreen() {
   const [editingPost,  setEditingPost ] = useState<Post | null>(null);
   const [editText,     setEditText    ] = useState('');
   const [saving,       setSaving      ] = useState(false);
+  const [loading,      setLoading     ] = useState(true);
 
   const loadPosts = useCallback(async () => {
     try {
@@ -75,6 +77,8 @@ export default function CommunityScreen() {
       setPosts(data);
     } catch (err) {
       console.error('[Community] Failed to load posts:', err);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -300,9 +304,18 @@ export default function CommunityScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#4499FF" />
         }
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No posts yet. Be the first to share!</Text>
-          </View>
+          loading
+            ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#4499FF" />
+                <Text style={styles.loadingText}>Loading community…</Text>
+              </View>
+            )
+            : (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>No posts yet. Be the first to share!</Text>
+              </View>
+            )
         }
       />
 
@@ -481,6 +494,8 @@ const styles = StyleSheet.create({
   listContent: { paddingVertical: 8 },
   emptyContainer: { padding: 40, alignItems: 'center' },
   emptyText: { color: '#334455', fontSize: 14, textAlign: 'center' },
+  loadingContainer: { paddingVertical: 80, alignItems: 'center', gap: 14 },
+  loadingText: { color: '#445566', fontSize: 13, fontFamily: MONO },
 
   postCard: {
     marginHorizontal: 12, marginVertical: 5,

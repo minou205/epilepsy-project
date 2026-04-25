@@ -50,5 +50,6 @@ export interface UserProfile {
   alarm_sound_enabled         : boolean;
   expo_push_token             : string | null;
   train_next_version          : boolean;
+  alarm_sound                 : string;
   created_at                  : string;
 }

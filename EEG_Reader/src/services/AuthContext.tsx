@@ -7,7 +7,7 @@ import React, {
 } from 'react';
 import { AuthError, Session, User } from '@supabase/supabase-js';
 import { supabase, UserProfile, UserRole } from './supabaseClient';
-import { getExpoPushToken } from './NotificationService';
+import { getExpoPushToken, scheduleNormalDataReminder } from './NotificationService';
 
 export interface SignUpPayload {
   email   : string;
@@ -60,8 +60,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .eq('id', uid)
       .single();
     if (!error && data) {
-      setProfile(data as UserProfile);
-      syncPushToken(uid, (data as UserProfile).expo_push_token ?? null).catch(() => {});
+      const prof = data as UserProfile;
+      setProfile(prof);
+      syncPushToken(uid, prof.expo_push_token ?? null).catch(() => {});
+      scheduleNormalDataReminder(prof.normal_alarm_time).catch(() => {});
     } else {
       const authUser = (await supabase.auth.getUser()).data.user;
       const email = authUser?.email ?? '';

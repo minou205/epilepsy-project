@@ -19,7 +19,16 @@
           "cameraPermission": "Allow EEG Reader to access your camera to scan QR codes."
         }
       ],
-      "expo-notifications"
+      [
+        "expo-notifications",
+        {
+          "sounds": [
+            "./assets/sounds/biohazard_alarm.mp3",
+            "./assets/sounds/u_alarm.mp3"
+          ]
+        }
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "ios": {
       "supportsTablet": false,

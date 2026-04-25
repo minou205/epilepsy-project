@@ -27,26 +27,25 @@ import {
 
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
-function normaliseBirthday(raw: string): string | null {
-  if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  if (/^\d{8}$/.test(raw)) {
-    const d = raw.slice(0, 2), m = raw.slice(2, 4), y = raw.slice(4);
-    return Number(d) > 12
-      ? `${y}-${m}-${d}`
-      : `${y}-${d}-${m}`;
+function getDateTimePicker(): any {
+  try {
+    return require('@react-native-community/datetimepicker').default;
+  } catch {
+    return null;
   }
-  const parts = raw.split(/[/\-.]/).map(s => s.trim());
-  if (parts.length === 3) {
-    let [a, b, c] = parts;
-    if (a.length === 4) return `${a}-${b.padStart(2, '0')}-${c.padStart(2, '0')}`;
-    if (c.length === 4) {
-      return Number(a) > 12
-        ? `${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`
-        : `${c}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`;
-    }
-  }
-  return raw;
+}
+
+function formatDateISO(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm   = String(d.getMonth() + 1).padStart(2, '0');
+  const dd   = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateHuman(d: Date): string {
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric', month: 'long', day: 'numeric',
+  });
 }
 
 type Tab = 'login' | 'signup';
@@ -66,7 +65,8 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [name,     setName    ] = useState('');
   const [username, setUsername ] = useState('');
-  const [birthday, setBirthday] = useState('');
+  const [birthday,    setBirthday   ] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [bio,      setBio     ] = useState('');
   const [role,     setRole    ] = useState<UserRole>('patient');
   const [consent,  setConsent ] = useState(false);
@@ -120,12 +120,12 @@ export default function LoginScreen() {
       setError('Password must be at least 6 characters.');
       return;
     }
-    if (!birthday.trim() || !normaliseBirthday(birthday.trim())) {
-      setError('Please enter a valid birthday (YYYY-MM-DD).');
+    if (!birthday) {
+      setError('Please select your birthday.');
       return;
     }
     if (!consent) {
-      setError('Please accept the data consent to continue.');
+      setError('Data sharing consent is required — the app cannot work without it.');
       return;
     }
 
@@ -159,7 +159,7 @@ export default function LoginScreen() {
       password,
       fullName: name.trim(),
       username: username.trim(),
-      birthday: normaliseBirthday(birthday.trim()),
+      birthday: formatDateISO(birthday),
       bio     : bio.trim(),
       role,
       consent,
@@ -330,16 +330,43 @@ export default function LoginScreen() {
                 </View>
 
                 <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Birthday (optional)</Text>
-                  <TextInput
+                  <Text style={styles.label}>Birthday *</Text>
+                  <TouchableOpacity
                     style={styles.input}
-                    value={birthday}
-                    onChangeText={setBirthday}
-                    placeholder="YYYY-MM-DD"
-                    placeholderTextColor="#334455"
-                    autoCapitalize="none"
-                    returnKeyType="next"
-                  />
+                    onPress={() => setShowDatePicker(true)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.dateText, !birthday && styles.datePlaceholder]}>
+                      {birthday ? formatDateHuman(birthday) : 'Tap to select your birthday'}
+                    </Text>
+                  </TouchableOpacity>
+                  {showDatePicker && (() => {
+                    const DateTimePicker = getDateTimePicker();
+                    if (!DateTimePicker) {
+                      setShowDatePicker(false);
+                      Alert.alert(
+                        'Date Picker Missing',
+                        'Run: npm install @react-native-community/datetimepicker',
+                      );
+                      return null;
+                    }
+                    return (
+                      <DateTimePicker
+                        value={birthday ?? new Date(2000, 0, 1)}
+                        mode="date"
+                        display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                        maximumDate={new Date()}
+                        minimumDate={new Date(1900, 0, 1)}
+                        onChange={(_event: any, selected?: Date) => {
+                          setShowDatePicker(Platform.OS === 'ios');
+                          if (selected) {
+                            setBirthday(selected);
+                            setError(null);
+                          }
+                        }}
+                      />
+                    );
+                  })()}
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -415,29 +442,36 @@ export default function LoginScreen() {
                   </View>
                 )}
 
-                <View style={styles.consentCard}>
+                <View style={[styles.consentCard, !consent && styles.consentCardWarn]}>
                   <View style={styles.consentRow}>
                     <Switch
                       value={consent}
                       onValueChange={v => { setConsent(v); setError(null); }}
-                      thumbColor={consent ? '#00FF88' : '#556677'}
-                      trackColor={{ false: '#1A2030', true: '#00FF8840' }}
+                      thumbColor={consent ? '#00FF88' : '#FF6644'}
+                      trackColor={{ false: '#3A1A1A', true: '#00FF8840' }}
                     />
-                    <Text style={styles.consentTitle}>Share anonymised data for research</Text>
+                    <Text style={styles.consentTitle}>
+                      Share anonymised data for research <Text style={styles.requiredMark}>*Required</Text>
+                    </Text>
                   </View>
                   <Text style={styles.consentBody}>
-                    Your EEG data (seizures + normal activity) will be used to improve seizure
-                    detection AI. Data is stored securely, never sold, and linked only to your
-                    anonymous patient ID. You can withdraw consent at any time in Settings.
+                    Your EEG data (seizures + normal activity) is used to train the AI that
+                    detects and predicts your own seizures. The app cannot function without
+                    this — there's nothing to learn from otherwise. Data is stored securely,
+                    never sold, and linked only to your anonymous patient ID. You can request
+                    deletion at any time.
                   </Text>
                 </View>
               </>
             )}
 
             <TouchableOpacity
-              style={[styles.primaryBtn, loading && styles.btnDisabled]}
+              style={[
+                styles.primaryBtn,
+                (loading || (tab === 'signup' && !consent)) && styles.btnDisabled,
+              ]}
               onPress={handleSubmit}
-              disabled={loading}
+              disabled={loading || (tab === 'signup' && !consent)}
               activeOpacity={0.85}
             >
               {loading
@@ -499,9 +533,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#080D18', borderRadius: 10, borderWidth: 1,
     borderColor: '#1E2E44', padding: 14, gap: 10,
   },
+  consentCardWarn: { borderColor: '#FF664466', backgroundColor: '#1A0E08' },
   consentRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   consentTitle: { color: '#AAB8CC', fontSize: 13, fontWeight: '600', flex: 1 },
   consentBody: { color: '#445566', fontSize: 12, lineHeight: 18 },
+  requiredMark: { color: '#FF6644', fontSize: 11, fontWeight: '700' },
+  dateText: {
+    color: '#E8F0FF', fontSize: 14, fontFamily: MONO,
+  },
+  datePlaceholder: { color: '#334455' },
   primaryBtn: { backgroundColor: '#4499FF', borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 2 },
   btnDisabled: { opacity: 0.5 },
   primaryBtnText: { color: '#090915', fontSize: 16, fontWeight: '700' },

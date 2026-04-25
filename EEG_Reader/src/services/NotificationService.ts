@@ -1,3 +1,5 @@
+import { ALARM_SOUNDS, findAlarmSound } from '../constants/alarmSounds';
+
 const SEIZURE_BUTTON_NOTIFICATION_ID = 'tracker_seizure_button';
 const CATEGORY_SEIZURE_REPORT        = 'SEIZURE_REPORT';
 const CATEGORY_ALARM                 = 'SEIZURE_ALARM';
@@ -32,18 +34,29 @@ export async function setupNotifications(): Promise<void> {
 
   const Platform = require('react-native').Platform;
   if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('seizure-alarms', {
-      name       : 'Seizure Alarms',
-      importance : 4,
-      vibrationPattern: [0, 500, 250, 500],
-      sound      : 'default',
-      lockscreenVisibility: 1,
-      enableVibrate: true,
-    });
+    for (const opt of ALARM_SOUNDS) {
+      try {
+        await Notifications.deleteNotificationChannelAsync(opt.channelId);
+      } catch {}
+      await Notifications.setNotificationChannelAsync(opt.channelId, {
+        name        : `Seizure Alarms (${opt.label})`,
+        importance  : 4,
+        vibrationPattern    : [0, 500, 250, 500],
+        sound       : opt.file ?? 'default',
+        lockscreenVisibility: 1,
+        enableVibrate       : true,
+      });
+    }
 
     await Notifications.setNotificationChannelAsync('tracker-status', {
       name       : 'Tracker Status',
       importance : 3,
+      sound      : 'default',
+    });
+
+    await Notifications.setNotificationChannelAsync('normal-data-reminder', {
+      name       : 'Daily EEG Reminder',
+      importance : 4,
       sound      : 'default',
     });
   }
@@ -160,8 +173,9 @@ export async function cancelSeizureButtonNotification(): Promise<void> {
 }
 
 export async function triggerAlarmNotification(
-  type   : 'prediction' | 'detection',
-  message: string,
+  type    : 'prediction' | 'detection',
+  message : string,
+  soundId?: string,
 ): Promise<void> {
   const Notifications = getNotifications();
   if (!Notifications) return;
@@ -170,43 +184,60 @@ export async function triggerAlarmNotification(
     ? 'Seizure Predicted'
     : 'Seizure Detected Now';
 
+  const sound = findAlarmSound(soundId);
+
   await Notifications.scheduleNotificationAsync({
     content: {
       title,
       body              : message,
       categoryIdentifier: CATEGORY_ALARM,
-      sound             : 'default',
+      sound             : sound.file ?? 'default',
       priority          : 'max',
       ...(require('react-native').Platform.OS === 'android'
-        ? { channelId: 'seizure-alarms' }
+        ? { channelId: sound.channelId }
         : {}),
     },
     trigger: null,
   });
 }
 
-export async function scheduleDailyCollectionReminders(
-  collectionTimesMinutes: number[],
+const NORMAL_DATA_REMINDER_PREFIX = 'normal_data_reminder_';
+
+export async function scheduleNormalDataReminder(
+  timeStr: string | null | undefined,
 ): Promise<void> {
   const Notifications = getNotifications();
   if (!Notifications) return;
 
-  await Notifications.cancelAllScheduledNotificationsAsync();
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  for (const n of all) {
+    if (typeof n.identifier === 'string' && n.identifier.startsWith(NORMAL_DATA_REMINDER_PREFIX)) {
+      await Notifications.cancelScheduledNotificationAsync(n.identifier).catch(() => {});
+    }
+  }
 
-  for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
-    const totalMins = collectionTimesMinutes[dayIndex] ?? 720;
-    const hour      = Math.floor(totalMins / 60);
-    const minute    = totalMins % 60;
+  if (!timeStr) return;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(timeStr);
+  if (!m) {
+    console.warn('[Notifications] invalid normal_alarm_time format:', timeStr);
+    return;
+  }
+  const hour   = Math.max(0, Math.min(23, parseInt(m[1], 10)));
+  const minute = Math.max(0, Math.min(59, parseInt(m[2], 10)));
+  const Platform = require('react-native').Platform;
 
+  for (let weekday = 1; weekday <= 7; weekday++) {
     await Notifications.scheduleNotificationAsync({
+      identifier: `${NORMAL_DATA_REMINDER_PREFIX}${weekday}`,
       content: {
         title: 'Daily EEG Collection',
         body : 'Time for your 30-minute daily EEG data collection. Please keep your headset on.',
         sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'normal-data-reminder' } : {}),
       },
       trigger: {
         type   : 'weekly',
-        weekday: dayIndex + 1,
+        weekday,
         hour,
         minute,
       } as any,

@@ -142,6 +142,8 @@ export function useTrackerSession(
   const { profile } = useAuth();
   const trainNextVersionRef = useRef<boolean>(true);
   trainNextVersionRef.current = profile?.train_next_version ?? true;
+  const alarmSoundRef = useRef<string>('default');
+  alarmSoundRef.current = profile?.alarm_sound ?? 'default';
 
   const [status,            setStatus           ] = useState<TrackerStatus>('idle');
   const [statusMessage,     setStatusMessage    ] = useState('Waiting for EEG connection...');
@@ -367,7 +369,7 @@ export function useTrackerSession(
     }
 
     if (settingsRef.current.alarmSoundEnabled !== false) {
-      triggerAlarmNotification(type, event.message).catch(() => {});
+      triggerAlarmNotification(type, event.message, alarmSoundRef.current).catch(() => {});
     }
 
     if (tier !== 'general' && tier !== 'none') {
@@ -382,7 +384,7 @@ export function useTrackerSession(
 
   function sendConfirmNotification(_alarmId: string, alarmType: 'prediction' | 'detection' = 'detection') {
     if (settingsRef.current.alarmSoundEnabled === false) return;
-    triggerAlarmNotification(alarmType, 'Did you have a seizure? Please confirm in the app.')
+    triggerAlarmNotification(alarmType, 'Did you have a seizure? Please confirm in the app.', alarmSoundRef.current)
       .catch(() => {});
   }
 
